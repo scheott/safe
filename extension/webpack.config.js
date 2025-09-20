@@ -3,7 +3,7 @@ const CopyPlugin = require('copy-webpack-plugin');
 
 module.exports = {
   mode: 'development',
-  devtool: false,
+  devtool: 'cheap-module-source-map', // Changed from false - MV3 compatible
   entry: {
     content: './src/content/content.js',
     popup: './src/popup/popup.js'
@@ -13,6 +13,10 @@ module.exports = {
     path: path.resolve(__dirname, 'dist'),
     filename: '[name].js',
     clean: true
+  },
+  optimization: {
+    minimize: false, // Keep readable for development
+    concatenateModules: false // Avoid eval() in concatenation
   },
   plugins: [
     new CopyPlugin({

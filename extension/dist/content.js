@@ -1,7 +1,4 @@
 /******/ (() => { // webpackBootstrap
-/*!********************************!*\
-  !*** ./src/content/content.js ***!
-  \********************************/
 // SafeSignal Content Script - Phase 1.1 Basic Version
 console.log('SafeSignal: Content script loaded on', window.location.hostname);
 
@@ -57,3 +54,4 @@ if (document.readyState === 'loading') {
 }
 /******/ })()
 ;
+//# sourceMappingURL=content.js.map

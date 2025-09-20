@@ -1,7 +1,4 @@
 /******/ (() => { // webpackBootstrap
-/*!****************************!*\
-  !*** ./src/popup/popup.js ***!
-  \****************************/
 // SafeSignal Popup Script - Phase 1.1 Basic Version
 console.log('SafeSignal: Popup loaded');
 
@@ -16,3 +13,4 @@ chrome.runtime.sendMessage(
 console.log('SafeSignal: Popup script complete');
 /******/ })()
 ;
+//# sourceMappingURL=popup.js.map
