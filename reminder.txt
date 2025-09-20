@@ -1,0 +1,10 @@
+Yes! You should run it from the api folder.
+Make sure you're in the correct directory:
+powershell# You should be here
+C:\Users\schen\signal\safesignal\api>
+If you're not in the api folder, navigate there:
+powershellcd api
+Then make sure your virtual environment is activated (you should see (venv) in your prompt):
+powershell.\venv\Scripts\Activate.ps1
+Then run the server:
+powershelluvicorn src.main:app --reload --host 0.0.0.0 --port 8000
