@@ -3,18 +3,10 @@
   "name": "SafeSignal",
   "version": "1.0.0",
   "description": "Gentle web safety guidance for seniors and their families",
-  
-  "permissions": [
-    "activeTab",
-    "storage",
-    "scripting"
-  ],
-  
-  "host_permissions": [
-    "http://*/*",
-    "https://*/*"
-  ],
-  
+
+  "permissions": ["activeTab", "storage"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
@@ -23,11 +15,12 @@
       "all_frames": false
     }
   ],
-  
+
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
-  
+
   "action": {
     "default_popup": "popup.html",
     "default_title": "SafeSignal"

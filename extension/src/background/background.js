@@ -1,21 +1,10 @@
-// SafeSignal Background Service Worker - Phase 1.1 Basic Version
-console.log('SafeSignal: Background service worker started');
+﻿console.log('SafeSignal: Background started');
 
-// Basic message handler setup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    console.log('SafeSignal: Received message in background:', message);
-    
-    // For now, just echo back that we received it
-    sendResponse({ status: 'received', echo: message });
+    console.log('Message:', message);
+    sendResponse({ status: 'ok' });
 });
 
-// Installation handler
 chrome.runtime.onInstalled.addListener((details) => {
-    console.log('SafeSignal: Extension installed/updated', details.reason);
-    
-    if (details.reason === 'install') {
-        console.log('SafeSignal: First time installation');
-    }
+    console.log('Installed:', details.reason);
 });
-
-console.log('SafeSignal: Background script setup complete');

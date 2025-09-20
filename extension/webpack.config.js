@@ -7,7 +7,7 @@ module.exports = {
   entry: {
     content: './src/content/content.js',
     popup: './src/popup/popup.js'
-    // Remove background from webpack entry - we'll copy it directly
+    // Note: background is NOT here - we copy it directly
   },
   output: {
     path: path.resolve(__dirname, 'dist'),
