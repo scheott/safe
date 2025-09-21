@@ -12,29 +12,18 @@ class SafeSignalBadge {
             offsetY: 0
         };
         
-        // SPA Detection properties
+        // SPA Detection properties (simplified)
         this.currentUrl = window.location.href;
         this.currentSignature = null;
         this.mutationObserver = null;
         this.pageDebounceTimer = null;
-        this.contentDebounceTimer = null;
         this.lastCheck = 0;
         this.checkCooldown = 30 * 60 * 1000; // 30 minutes
-        this.sessionUpdateCounts = new Map();
         this.cleanupHandlers = [];
         
         // UI state
         this.isMenuOpen = false;
-        this.isDragging = false;
-        this.isCompact = false;
-        this.dragStartPos = null;
-        this.longPressTimer = null;
-        this.scrollTimer = null;
-        this.suppressNextClickUntil = 0;
-        this._dragArmedUntil = 0;
-        this._onDocPointerMove = null;
-        this._onDocPointerUp = null;
-        this._onDocPointerCancel = null;
+        this.proximityCheckInterval = null; // Track the interval
         this.userPreferences = {
             positioning: { anchor: 'bottom-right', offsetX: 0, offsetY: 0 },
             hiddenSites: new Set()
@@ -58,14 +47,13 @@ class SafeSignalBadge {
         this.createShadowDOMBadge();
         this.attachEventListeners();
         this.setupSPADetection();
-        this.setupScrollDetection();
         
         // Apply saved positioning
         this.applyPositioning(this.userPreferences.positioning);
         
         this.checkIfPageChanged('initial_load');
         
-        console.log('SafeSignal: Phase 1.4+ Enhanced positioning & controls active');
+        console.log('SafeSignal: Enhanced badge active (simplified)');
     }
 
     shouldSkipInjection() {
@@ -100,8 +88,8 @@ class SafeSignalBadge {
     }
     
     getAnchorPositions() {
-        const padding = 16; // Safe edge padding
-        const systemBarHeight = 80; // Bottom system bar clearance
+        const padding = 20; // Increased for better safe margins
+        const systemBarHeight = 100; // More conservative for mobile
         const viewportWidth = window.innerWidth;
         const viewportHeight = window.innerHeight;
         
@@ -140,14 +128,9 @@ class SafeSignalBadge {
             }
         }
         
-        // Apply safe bounds
-        finalX = Math.max(12, Math.min(finalX, window.innerWidth - badgeW - 12));
-        finalY = Math.max(12, Math.min(finalY, window.innerHeight - badgeH - 12));
-        
-        // Check for collision avoidance
-        const collisionResult = this.applyCollisionAvoidance(finalX, finalY, badgeW, badgeH);
-        finalX = collisionResult.x;
-        finalY = collisionResult.y;
+        // Apply safe bounds with more margin
+        finalX = Math.max(16, Math.min(finalX, window.innerWidth - badgeW - 16));
+        finalY = Math.max(16, Math.min(finalY, window.innerHeight - badgeH - 16));
         
         // Apply position
         badge.style.position = 'fixed';
@@ -162,42 +145,7 @@ class SafeSignalBadge {
         // Update active state in UI
         this.updatePositionGridUI(anchor);
         
-        // Apply size adjustment for mid positions
-        if (anchor.includes('mid')) {
-            badge.classList.add('mid-position');
-        } else {
-            badge.classList.remove('mid-position');
-        }
-        
         console.log('SafeSignal: Applied positioning:', { anchor, offsetX, offsetY, finalX, finalY });
-    }
-
-    applyCollisionAvoidance(x, y, badgeW, badgeH) {
-        // Check for overlapping high-z fixed elements
-        const elementsAtPosition = document.elementsFromPoint(
-            x + badgeW / 2, 
-            y + badgeH / 2
-        ).filter(el => el !== this.badgeContainer);
-        
-        const hasCollision = elementsAtPosition.some(el => {
-            const style = window.getComputedStyle(el);
-            return style.position === 'fixed' && 
-                   style.zIndex !== 'auto' && 
-                   parseInt(style.zIndex) > 1000;
-        });
-        
-        if (hasCollision) {
-            // Apply small nudge without overwriting saved offsets
-            const nudgeX = x + 12 > window.innerWidth / 2 ? -12 : 12;
-            const nudgeY = y + 12 > window.innerHeight / 2 ? -12 : 12;
-            
-            return {
-                x: Math.max(12, Math.min(x + nudgeX, window.innerWidth - badgeW - 12)),
-                y: Math.max(12, Math.min(y + nudgeY, window.innerHeight - badgeH - 12))
-            };
-        }
-        
-        return { x, y };
     }
 
     updatePositionGridUI(activeAnchor) {
@@ -210,39 +158,6 @@ class SafeSignalBadge {
                 option.classList.add('active');
             }
         });
-    }
-
-    findNearestAnchor(x, y) {
-        const anchorPositions = this.getAnchorPositions();
-        let nearestAnchor = 'bottom-right';
-        let minDistance = Infinity;
-        
-        Object.entries(anchorPositions).forEach(([anchor, pos]) => {
-            const distance = Math.sqrt(Math.pow(x - pos.x, 2) + Math.pow(y - pos.y, 2));
-            if (distance < minDistance) {
-                minDistance = distance;
-                nearestAnchor = anchor;
-            }
-        });
-        
-        return nearestAnchor;
-    }
-
-    calculateOffsetFromAnchor(centerX, centerY, anchor) {
-        const anchorPositions = this.getAnchorPositions();
-        const anchorPos = anchorPositions[anchor];
-        const { width: badgeW, height: badgeH } = this.getBadgeRect();
-        
-        // Convert the badge center position into the same "top/left" placement frame used by applyPositioning
-        let targetX = centerX, targetY = centerY;
-        if (anchor.includes('right')) targetX -= badgeW;
-        if (anchor.includes('bottom')) targetY -= badgeH;
-        if (anchor.includes('mid')) targetY -= badgeH / 2;
-        
-        return { 
-            offsetX: Math.round(targetX - anchorPos.x), 
-            offsetY: Math.round(targetY - anchorPos.y) 
-        };
     }
 
     // === STORAGE & PREFERENCES ===
@@ -358,7 +273,8 @@ class SafeSignalBadge {
     createShadowDOMBadge() {
         this.badgeContainer = document.createElement('div');
         this.badgeContainer.id = 'safesignal-badge-container';
-        this.shadowRoot = this.badgeContainer.attachShadow({ mode: 'closed' });
+        // Use open mode for dev/debugging - change to 'closed' for production
+        this.shadowRoot = this.badgeContainer.attachShadow({ mode: 'open' });
         
         this.shadowRoot.innerHTML = `
             <style>
@@ -379,12 +295,12 @@ class SafeSignalBadge {
                     font-weight: 600;
                     cursor: pointer;
                     user-select: none;
-                    z-index: 2147483647;
+                    z-index: 999999; /* Reduced from 2147483647 */
                     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.1);
                     transition: all 0.2s ease;
                     transform: scale(1);
-                    backdrop-filter: blur(8px);
-                    touch-action: none;
+                    /* Removed backdrop-filter for lighter feel */
+                    touch-action: manipulation; /* Better for touch, allows page pan */
                 }
                 
                 @media (prefers-reduced-motion: reduce) {
@@ -394,31 +310,8 @@ class SafeSignalBadge {
                     }
                 }
                 
-                .badge.mid-position {
-                    transform: scale(0.85);
-                }
-                
-                .badge.mid-position:hover {
-                    transform: scale(0.9);
-                }
-                
-                .badge.compact {
-                    width: 2rem;
-                    height: 2rem;
-                    font-size: 1rem;
-                    opacity: 0.8;
-                }
-                
-                .badge.compact:hover {
-                    width: 3rem;
-                    height: 3rem;
-                    font-size: 1.25rem;
-                    opacity: 1;
-                }
-                
                 .badge-status {
                     position: absolute;
-                    bottom: -45px;
                     left: 50%;
                     transform: translateX(-50%);
                     background: rgba(0, 0, 0, 0.9);
@@ -430,12 +323,23 @@ class SafeSignalBadge {
                     pointer-events: none;
                     opacity: 0;
                     transition: opacity 0.2s ease;
-                    z-index: 2147483648;
+                    z-index: 1000000;
                     max-width: 200px;
                     word-wrap: break-word;
                     white-space: normal;
                     text-align: center;
                     line-height: 1.2;
+                }
+                
+                /* Smart status positioning - above if at bottom, below if at top */
+                .badge.bottom-positioned .badge-status {
+                    bottom: 100%;
+                    margin-bottom: 8px;
+                }
+                
+                .badge.top-positioned .badge-status {
+                    top: 100%;
+                    margin-top: 8px;
                 }
                 
                 .badge.show-status .badge-status {
@@ -460,7 +364,7 @@ class SafeSignalBadge {
                     justify-content: center;
                     opacity: 0;
                     transition: opacity 0.2s ease;
-                    z-index: 2147483649;
+                    z-index: 1000001;
                 }
                 
                 .badge:hover .menu-button,
@@ -486,7 +390,7 @@ class SafeSignalBadge {
                     transform: translateY(-10px) scale(0.95);
                     pointer-events: none;
                     transition: all 0.2s ease;
-                    z-index: 2147483650;
+                    z-index: 1000002;
                     border: 1px solid rgba(0, 0, 0, 0.08);
                 }
                 
@@ -663,10 +567,6 @@ class SafeSignalBadge {
                 .badge.hidden {
                     display: none;
                 }
-                
-                .badge.near-input {
-                    opacity: 0.6;
-                }
             </style>
             
             <div class="badge checking" 
@@ -681,7 +581,8 @@ class SafeSignalBadge {
                 <button class="menu-button" 
                         type="button"
                         title="Badge options"
-                        aria-label="Open badge options menu">⋯</button>
+                        aria-label="Open badge options menu"
+                        aria-expanded="false">⋯</button>
                 
                 <div class="badge-menu" role="menu" aria-label="Badge options">
                     <div class="menu-section">
@@ -744,8 +645,7 @@ class SafeSignalBadge {
         // Badge interactions
         badge.addEventListener('click', (e) => {
             e.stopPropagation();
-            if (performance.now() < this.suppressNextClickUntil) return;
-            if (!this.isMenuOpen && !this.isDragging) {
+            if (!this.isMenuOpen) {
                 this.handleBadgeClick();
             }
         });
@@ -796,23 +696,28 @@ class SafeSignalBadge {
             resizeRaf = requestAnimationFrame(() => {
                 resizeRaf = null;
                 this.applyPositioning(this.positioning);
+                this.updateStatusBubblePosition(); // Check if we need to flip status bubble
             });
         };
         window.addEventListener('resize', onResize);
         this.cleanupHandlers.push(() => window.removeEventListener('resize', onResize));
         
-        // Input proximity detection
-        setInterval(() => {
+        // Input proximity detection with proper cleanup tracking
+        this.proximityCheckInterval = setInterval(() => {
             this.checkInputProximity();
-        }, 1000);
+        }, 2000); // Reduced frequency
+        this.cleanupHandlers.push(() => clearInterval(this.proximityCheckInterval));
     }
 
     checkInputProximity() {
-        if (this.isDragging || this.isMenuOpen) return;
+        if (!this.shadowRoot || this.isMenuOpen) return;
         
         const badge = this.shadowRoot.querySelector('.badge');
+        if (!badge) return;
+        
         const rect = badge.getBoundingClientRect();
         
+        // Check if badge overlaps with any input elements
         const elementsNearby = document.elementsFromPoint(
             rect.left + rect.width / 2,
             rect.top + rect.height / 2
@@ -824,10 +729,27 @@ class SafeSignalBadge {
                    el.isContentEditable;
         });
         
+        // For now, just log this - in the future could show hint in menu
         if (nearInput) {
-            badge.classList.add('near-input');
+            console.log('SafeSignal: Badge near input field');
+        }
+    }
+
+    updateStatusBubblePosition() {
+        const badge = this.shadowRoot?.querySelector('.badge');
+        if (!badge) return;
+        
+        const rect = badge.getBoundingClientRect();
+        const viewportHeight = window.innerHeight;
+        
+        // Remove existing positioning classes
+        badge.classList.remove('bottom-positioned', 'top-positioned');
+        
+        // If badge is in bottom half of screen, show status above
+        if (rect.bottom > viewportHeight * 0.6) {
+            badge.classList.add('bottom-positioned');
         } else {
-            badge.classList.remove('near-input');
+            badge.classList.add('top-positioned');
         }
     }
 
@@ -844,6 +766,10 @@ class SafeSignalBadge {
         
         const message = stateMessages[this.currentState] || 'SafeSignal active';
         statusEl.textContent = message;
+        
+        // Update status bubble position before showing
+        this.updateStatusBubblePosition();
+        
         badge.classList.add('show-status');
         
         setTimeout(() => {
@@ -903,77 +829,12 @@ class SafeSignalBadge {
         console.log('SafeSignal: State changed to:', newState);
     }
 
-    // === SCROLL DETECTION & AUTO-MINIMIZE ===
-
-    setupScrollDetection() {
-        let scrollTimeout;
-        let isScrolling = false;
-        
-        const handleScroll = () => {
-            if (!isScrolling) {
-                isScrolling = true;
-                // Start compact mode after 1 second of scrolling
-                this.scrollTimer = setTimeout(() => {
-                    this.setCompactMode(true);
-                }, 1000);
-            }
-            
-            // Reset the timer
-            clearTimeout(scrollTimeout);
-            scrollTimeout = setTimeout(() => {
-                isScrolling = false;
-                clearTimeout(this.scrollTimer);
-                // Exit compact mode after 2 seconds of no scrolling
-                setTimeout(() => {
-                    this.setCompactMode(false);
-                }, 2000);
-            }, 150);
-        };
-        
-        window.addEventListener('scroll', handleScroll, { passive: true });
-        this.cleanupHandlers.push(() => {
-            window.removeEventListener('scroll', handleScroll);
-            clearTimeout(this.scrollTimer);
-        });
-    }
-
-    setCompactMode(compact) {
-        if (this.isCompact === compact) return;
-        
-        this.isCompact = compact;
-        const badge = this.shadowRoot.querySelector('.badge');
-        
-        if (compact) {
-            badge.classList.add('compact');
-        } else {
-            badge.classList.remove('compact');
-        }
-        
-        console.log('SafeSignal: Compact mode:', compact);
-    }
-
     // === KEYBOARD NAVIGATION ===
 
     handleKeyboardNavigation(e) {
         if (!this.isVisible) return;
         
-        const step = e.shiftKey ? 24 : 8;
-        let deltaX = 0;
-        let deltaY = 0;
-        
         switch (e.key) {
-            case 'ArrowLeft':
-                deltaX = -step;
-                break;
-            case 'ArrowRight':
-                deltaX = step;
-                break;
-            case 'ArrowUp':
-                deltaY = -step;
-                break;
-            case 'ArrowDown':
-                deltaY = step;
-                break;
             case 'Enter':
             case ' ':
                 if (!this.isMenuOpen) {
@@ -985,21 +846,6 @@ class SafeSignalBadge {
                 this.closeMenu();
                 e.preventDefault();
                 return;
-            default:
-                return;
-        }
-        
-        if (deltaX !== 0 || deltaY !== 0) {
-            e.preventDefault();
-            
-            const newPositioning = {
-                ...this.positioning,
-                offsetX: this.positioning.offsetX + deltaX,
-                offsetY: this.positioning.offsetY + deltaY
-            };
-            
-            this.applyPositioning(newPositioning);
-            this.savePositioningPreference(newPositioning);
         }
     }
 
@@ -1009,15 +855,23 @@ class SafeSignalBadge {
         this.isMenuOpen = !this.isMenuOpen;
         const menu = this.shadowRoot.querySelector('.badge-menu');
         const badge = this.shadowRoot.querySelector('.badge');
+        const menuButton = this.shadowRoot.querySelector('.menu-button');
         
         if (this.isMenuOpen) {
             menu.classList.add('open');
             badge.classList.add('menu-open');
+            menuButton.setAttribute('aria-expanded', 'true');
+            
+            // Focus first interactive element in menu
             const firstButton = menu.querySelector('.menu-item, .position-option');
             if (firstButton) firstButton.focus();
         } else {
             menu.classList.remove('open');
             badge.classList.remove('menu-open');
+            menuButton.setAttribute('aria-expanded', 'false');
+            
+            // Return focus to menu button
+            menuButton.focus();
         }
     }
 
@@ -1026,8 +880,11 @@ class SafeSignalBadge {
             this.isMenuOpen = false;
             const menu = this.shadowRoot.querySelector('.badge-menu');
             const badge = this.shadowRoot.querySelector('.badge');
+            const menuButton = this.shadowRoot.querySelector('.menu-button');
+            
             menu.classList.remove('open');
             badge.classList.remove('menu-open');
+            menuButton.setAttribute('aria-expanded', 'false');
         }
     }
 
@@ -1039,23 +896,23 @@ class SafeSignalBadge {
         this.showPositionConfirmation(anchor);
     }
 
-    showPositionConfirmation(message) {
+    showPositionConfirmation(anchor) {
         const statusEl = this.shadowRoot.querySelector('.badge-status');
         const badge = this.shadowRoot.querySelector('.badge');
         
-        if (typeof message === 'string') {
-            statusEl.textContent = message;
-        } else {
-            const friendlyNames = {
-                'bottom-right': 'Bottom Right',
-                'bottom-left': 'Bottom Left', 
-                'top-right': 'Top Right',
-                'top-left': 'Top Left',
-                'mid-right': 'Middle Right',
-                'mid-left': 'Middle Left'
-            };
-            statusEl.textContent = `Moved to ${friendlyNames[message]}`;
-        }
+        const friendlyNames = {
+            'bottom-right': 'Bottom Right',
+            'bottom-left': 'Bottom Left', 
+            'top-right': 'Top Right',
+            'top-left': 'Top Left',
+            'mid-right': 'Middle Right',
+            'mid-left': 'Middle Left'
+        };
+        
+        statusEl.textContent = `Moved to ${friendlyNames[anchor]}`;
+        
+        // Update status bubble position before showing
+        this.updateStatusBubblePosition();
         
         badge.classList.add('show-status');
         
@@ -1076,7 +933,7 @@ class SafeSignalBadge {
         this.isVisible = true;
     }
 
-    // === SPA DETECTION SYSTEM ===
+    // === SIMPLIFIED SPA DETECTION ===
 
     setupSPADetection() {
         this.patchHistoryAPI();
@@ -1104,8 +961,8 @@ class SafeSignalBadge {
             window.removeEventListener('pagehide', pagehideHandler);
         });
         
-        this.setupMutationObserver();
-        this.updateContentSignature();
+        // Simplified: No mutation observer for now to reduce complexity
+        console.log('SafeSignal: Simplified SPA detection active (history changes only)');
     }
 
     patchHistoryAPI() {
@@ -1135,126 +992,8 @@ class SafeSignalBadge {
         if (newUrl !== this.currentUrl) {
             console.log(`SafeSignal: URL changed (${source}):`, this.currentUrl, '→', newUrl);
             this.currentUrl = newUrl;
-            this.currentSignature = null;
-            this.sessionUpdateCounts.clear();
             this.debouncedPageCheck('url_change');
         }
-    }
-
-    setupMutationObserver() {
-        if (!document.body) {
-            console.log('SafeSignal: document.body not ready, will retry after DOMContentLoaded');
-            const retryHandler = () => {
-                if (document.body) {
-                    this.setupMutationObserver();
-                }
-            };
-            document.addEventListener('DOMContentLoaded', retryHandler, { once: true });
-            return;
-        }
-
-        this.mutationObserver = new MutationObserver((mutations) => {
-            this.handleDOMChanges(mutations);
-        });
-
-        this.mutationObserver.observe(document.body, {
-            childList: true,
-            subtree: true,
-            attributes: false
-        });
-        
-        console.log('SafeSignal: MutationObserver active');
-    }
-
-    handleDOMChanges(mutations) {
-        const significantMutations = mutations.filter(mutation => {
-            const target = mutation.target;
-            
-            if (this.isNoisyElement(target)) {
-                this.trackNoisyUpdate(target);
-                return false;
-            }
-            
-            if (target.isContentEditable || 
-                target.tagName === 'TEXTAREA' || 
-                target.tagName === 'INPUT') {
-                return false;
-            }
-            
-            if (mutation.type === 'childList' && 
-                mutation.addedNodes.length === 1 &&
-                mutation.addedNodes[0].nodeType === Node.TEXT_NODE &&
-                mutation.addedNodes[0].textContent.trim().length < 20) {
-                return false;
-            }
-            
-            return true;
-        });
-
-        if (significantMutations.length > 0) {
-            this.debouncedContentCheck();
-        }
-    }
-
-    isNoisyElement(element) {
-        if (!element || !element.closest) return false;
-        
-        const noisyTokens = new Set([
-            'ad', 'ads', 'advert', 'advertisement', 'sponsored', 'sponsor',
-            'promo', 'promotion', 'banner', 'popup', 'modal', 'overlay',
-            'carousel', 'slider', 'ticker', 'widget', 'sidebar',
-            'chat', 'live-chat', 'notification', 'toast', 'snackbar'
-        ]);
-        
-        if (element.classList) {
-            for (const className of element.classList) {
-                if (noisyTokens.has(className.toLowerCase())) {
-                    return true;
-                }
-            }
-        }
-        
-        if (element.id) {
-            const id = element.id.toLowerCase();
-            if (noisyTokens.has(id) || id.includes('google_ads') || id.includes('adsystem')) {
-                return true;
-            }
-        }
-        
-        try {
-            const noisySelectors = [
-                '[class*="google_ads"]', '[id*="google_ads"]',
-                '[class*="adsystem"]', '[id*="adsystem"]',
-                'iframe[src*="doubleclick"]', 'iframe[src*="googlesyndication"]'
-            ];
-            
-            return noisySelectors.some(selector => {
-                try {
-                    return element.closest(selector) !== null;
-                } catch (e) {
-                    return false;
-                }
-            });
-        } catch (e) {
-            return false;
-        }
-    }
-
-    trackNoisyUpdate(element) {
-        const elementKey = this.getElementKey(element);
-        const count = this.sessionUpdateCounts.get(elementKey) || 0;
-        this.sessionUpdateCounts.set(elementKey, count + 1);
-        
-        if (count > 5) {
-            console.log('SafeSignal: Ignoring noisy element:', elementKey, 'updates:', count);
-        }
-    }
-
-    getElementKey(element) {
-        const tag = element.tagName || 'TEXT';
-        const id = element.id || '';
-        const className = element.className || '';
-        return `${tag}#${id}.${className}`.substring(0, 50);
     }
 
     debouncedPageCheck(reason) {
@@ -1264,121 +1003,24 @@ class SafeSignalBadge {
         }, 800);
     }
 
-    debouncedContentCheck() {
-        clearTimeout(this.contentDebounceTimer);
-        this.contentDebounceTimer = setTimeout(() => {
-            this.checkIfContentChanged('content_mutation');
-        }, 500);
-    }
-
     async checkIfPageChanged(reason) {
         console.log(`SafeSignal: Checking page change (${reason})`);
         
+        const now = Date.now();
+        const timeSinceLastCheck = now - this.lastCheck;
+        
+        // Always allow initial load and URL changes
         if (reason === 'url_change' || reason === 'initial_load') {
-            this.updateContentSignature();
             await this.performPageAnalysis(reason);
             return;
         }
-        
-        const now = Date.now();
-        const timeSinceLastCheck = now - this.lastCheck;
         
         if (timeSinceLastCheck < this.checkCooldown) {
             console.log(`SafeSignal: Skipping check, cooldown active (${Math.round((this.checkCooldown - timeSinceLastCheck) / 1000)}s remaining)`);
             return;
         }
         
-        this.updateContentSignature();
         await this.performPageAnalysis(reason);
-    }
-
-    async checkIfContentChanged(reason) {
-        const newSignature = this.generateContentSignature();
-        
-        if (newSignature !== this.currentSignature) {
-            console.log('SafeSignal: Content signature changed:', this.currentSignature, '→', newSignature);
-            this.currentSignature = newSignature;
-            
-            const now = Date.now();
-            const timeSinceLastCheck = now - this.lastCheck;
-            
-            if (timeSinceLastCheck >= this.checkCooldown) {
-                await this.performPageAnalysis(reason);
-            } else {
-                console.log('SafeSignal: Content changed but cooldown active');
-            }
-        }
-    }
-
-    generateContentSignature() {
-        const mainContentEl = this.findMainContentElement();
-        if (!mainContentEl) {
-            return 'no-content';
-        }
-
-        const text = mainContentEl.textContent || '';
-        const len = text.length;
-        
-        if (len < 800) {
-            return 'content-too-small';
-        }
-
-        if (this.currentSignature) {
-            const prevLen = parseInt(this.currentSignature.split('|')[0], 10);
-            if (Math.abs(len - prevLen) < 50) {
-                return this.currentSignature;
-            }
-        }
-
-        const first1000 = text.substring(0, 1000);
-        const last1000 = text.substring(Math.max(0, len - 1000));
-        const linkCount = Math.min(mainContentEl.querySelectorAll('a').length, 500);
-        
-        const h1 = this.simpleHash(first1000);
-        const h2 = this.simpleHash(last1000);
-        
-        const signature = `${len}|${h1}|${h2}|${linkCount}`;
-        return signature;
-    }
-
-    findMainContentElement() {
-        const selectors = [
-            '[role="main"]', 'main', 'article',
-            '.main-content', '#main-content', '.content', '#content'
-        ];
-
-        for (const selector of selectors) {
-            const el = document.querySelector(selector);
-            if (el && el.textContent.length >= 800) {
-                return el;
-            }
-        }
-
-        const candidates = Array.from(document.querySelectorAll('div')).filter(div => {
-            const textLen = div.textContent.length;
-            return textLen >= 800 && !this.isNoisyElement(div);
-        });
-
-        if (candidates.length === 0) return document.body;
-
-        return candidates.reduce((largest, current) => {
-            return current.textContent.length > largest.textContent.length ? current : largest;
-        });
-    }
-
-    simpleHash(str) {
-        let hash = 0;
-        for (let i = 0; i < str.length; i++) {
-            const char = str.charCodeAt(i);
-            hash = ((hash << 5) - hash) + char;
-            hash = hash & hash;
-        }
-        return Math.abs(hash);
-    }
-
-    updateContentSignature() {
-        this.currentSignature = this.generateContentSignature();
-        console.log('SafeSignal: Content signature updated:', this.currentSignature);
     }
 
     async performPageAnalysis(reason) {
@@ -1431,15 +1073,18 @@ class SafeSignalBadge {
     }
 
     destroy() {
-        if (this.mutationObserver) {
-            this.mutationObserver.disconnect();
-            this.mutationObserver = null;
-        }
-        
-        [this.pageDebounceTimer, this.contentDebounceTimer, this.scrollTimer, this.longPressTimer].forEach(timer => {
+        // Clear all timers
+        [this.pageDebounceTimer, this.proximityCheckInterval].forEach(timer => {
             if (timer) clearTimeout(timer);
         });
         
+        // Clear the proximity check interval specifically
+        if (this.proximityCheckInterval) {
+            clearInterval(this.proximityCheckInterval);
+            this.proximityCheckInterval = null;
+        }
+        
+        // Run all cleanup handlers
         this.cleanupHandlers.forEach(cleanup => {
             try {
                 cleanup();
@@ -1449,6 +1094,7 @@ class SafeSignalBadge {
         });
         this.cleanupHandlers = [];
         
+        // Remove the badge from DOM
         if (this.badgeContainer && this.badgeContainer.parentNode) {
             this.badgeContainer.parentNode.removeChild(this.badgeContainer);
         }
