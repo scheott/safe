@@ -2,8 +2,9 @@ class SafeSignalBadgePositioning {
     constructor(shadowRoot) {
         this.shadowRoot = shadowRoot;
         this.SAFE_MARGIN = 16;
+        this.GAP = 8; // Gap between badge and menu
         this.topLayerContainer = null;
-        this.menuPortaled = false;
+        this.activeMenuEl = null; // Track which menu is currently active
     }
 
     // Create top-layer container for menu to escape clipping
@@ -27,127 +28,244 @@ class SafeSignalBadgePositioning {
         return this.topLayerContainer;
     }
 
-    // Portal menu to top layer when opening
-    portalMenuToTopLayer(menu, badgeRect) {
-        if (this.menuPortaled) return;
-        
+    // Move menu to top layer when opening (don't clone, move the actual element)
+    moveMenuToTopLayer(menu) {
         const container = this.createTopLayerContainer();
         
-        // Clone menu styles but make it portaled
-        const portaledMenu = menu.cloneNode(true);
-        portaledMenu.style.cssText = `
-            position: fixed;
-            pointer-events: auto;
-            z-index: 1;
-        `;
+        // Store original parent for restoration
+        menu._originalParent = menu.parentNode;
+        menu._originalNextSibling = menu.nextSibling;
         
-        // Hide original menu, show portaled version
-        menu.style.display = 'none';
-        container.appendChild(portaledMenu);
+        // Move to top layer
+        container.appendChild(menu);
         
-        this.menuPortaled = true;
-        return portaledMenu;
+        // Inject CSS into the portal container to maintain styles (guard against duplicates)
+        if (!this._portalStyleInjected) {
+            const style = document.createElement('style');
+            style.textContent = `
+                .badge-menu {
+                    position: fixed;
+                    pointer-events: none;
+                    background: white;
+                    border-radius: 12px;
+                    box-shadow: 0 8px 32px rgba(0,0,0,.15), 0 4px 16px rgba(0,0,0,.1);
+                    border: 1px solid rgba(0,0,0,.08);
+                    padding: 12px;
+                    min-width: 220px;
+                    max-height: calc(100vh - 32px);
+                    overflow-y: auto;
+                    box-sizing: border-box;
+                    /* CLOSED baseline */
+                    opacity: 0;
+                    transform: translateY(-10px) scale(0.95);
+                    z-index: auto;
+                }
+                
+                .badge-menu.open {
+                    /* OPEN state */
+                    opacity: 1;
+                    transform: none;
+                    pointer-events: auto;
+                }
+                
+                .menu-section {
+                    margin-bottom: 12px;
+                }
+                
+                .menu-section:last-child {
+                    margin-bottom: 0;
+                }
+                
+                .menu-label {
+                    font-size: 0.75rem;
+                    font-weight: 600;
+                    color: #6b7280;
+                    margin-bottom: 8px;
+                    text-transform: uppercase;
+                    letter-spacing: 0.05em;
+                }
+                
+                .position-grid {
+                    display: grid;
+                    grid-template-columns: repeat(3, 1fr);
+                    gap: 6px;
+                    margin-bottom: 12px;
+                }
+                
+                .position-option {
+                    width: 36px;
+                    height: 36px;
+                    border: 2px solid #e5e7eb;
+                    border-radius: 8px;
+                    background: #f9fafb;
+                    cursor: pointer;
+                    position: relative;
+                    transition: all 0.15s ease;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                }
+                
+                .position-option:hover {
+                    border-color: #3b82f6;
+                    background: #eff6ff;
+                    transform: scale(1.05);
+                }
+                
+                .position-option.active {
+                    border-color: #3b82f6;
+                    background: #3b82f6;
+                }
+                
+                .position-option::after {
+                    content: '';
+                    position: absolute;
+                    width: 8px;
+                    height: 8px;
+                    background: #6b7280;
+                    border-radius: 50%;
+                    transition: background 0.15s ease;
+                }
+                
+                .position-option.active::after {
+                    background: white;
+                }
+                
+                .position-option[data-position="top-left"]::after {
+                    top: 6px;
+                    left: 6px;
+                }
+                
+                .position-option[data-position="top-right"]::after {
+                    top: 6px;
+                    right: 6px;
+                }
+                
+                .position-option[data-position="mid-left"]::after {
+                    top: 50%;
+                    left: 6px;
+                    transform: translateY(-50%);
+                }
+                
+                .position-option[data-position="mid-right"]::after {
+                    top: 50%;
+                    right: 6px;
+                    transform: translateY(-50%);
+                }
+                
+                .position-option[data-position="bottom-left"]::after {
+                    bottom: 6px;
+                    left: 6px;
+                }
+                
+                .position-option[data-position="bottom-right"]::after {
+                    bottom: 6px;
+                    right: 6px;
+                }
+                
+                .menu-item {
+                    width: 100%;
+                    padding: 10px 14px;
+                    border: none;
+                    background: #f9fafb;
+                    color: #374151;
+                    font-size: 0.875rem;
+                    border-radius: 8px;
+                    cursor: pointer;
+                    transition: all 0.15s ease;
+                    text-align: left;
+                    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                }
+                
+                .menu-item:hover {
+                    background: #f3f4f6;
+                    color: #111827;
+                    transform: translateY(-1px);
+                }
+                
+                .menu-item.danger {
+                    color: #dc2626;
+                }
+                
+                .menu-item.danger:hover {
+                    background: #fef2f2;
+                    color: #991b1b;
+                }
+                
+                .menu--above { 
+                    transform-origin: bottom center; 
+                }
+                
+                .menu--left { 
+                    transform-origin: top right; 
+                }
+            `;
+            container.appendChild(style);
+            this._portalStyleInjected = true;
+        }
+        
+        this.activeMenuEl = menu;
+        return menu;
     }
 
-    // Calculate smart menu placement
+    // Restore menu to original position
+    restoreMenuToShadow(menu) {
+        if (menu._originalParent) {
+            if (menu._originalNextSibling) {
+                menu._originalParent.insertBefore(menu, menu._originalNextSibling);
+            } else {
+                menu._originalParent.appendChild(menu);
+            }
+            delete menu._originalParent;
+            delete menu._originalNextSibling;
+        }
+        this.activeMenuEl = null;
+    }
+
+    // Calculate smart menu placement with gap
     calculateMenuPlacement(badgeRect, menuRect) {
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
+        const vw = window.visualViewport?.width || window.innerWidth;
+        const vh = window.visualViewport?.height || window.innerHeight;
         const margin = this.SAFE_MARGIN;
+        const gap = this.GAP;
         
         let placement = {
-            x: badgeRect.right,
-            y: badgeRect.bottom,
+            x: badgeRect.right + gap,
+            y: badgeRect.bottom + gap,
             anchorX: 'right',
             anchorY: 'below',
             classes: []
         };
         
         // Vertical placement - flip if would overflow bottom
-        if (badgeRect.bottom + menuRect.height > vh - margin) {
-            placement.y = badgeRect.top - menuRect.height;
+        if (badgeRect.bottom + gap + menuRect.height > vh - margin) {
+            placement.y = badgeRect.top - gap - menuRect.height;
             placement.anchorY = 'above';
             placement.classes.push('menu--above');
         }
         
         // Horizontal placement - flip if would overflow right
-        if (badgeRect.right + menuRect.width > vw - margin) {
-            placement.x = badgeRect.left - menuRect.width;
+        if (badgeRect.right + gap + menuRect.width > vw - margin) {
+            placement.x = badgeRect.left - gap - menuRect.width;
             placement.anchorX = 'left';
             placement.classes.push('menu--left');
         }
         
-        // Ensure within safe bounds
+        // Clamp to safe bounds
         placement.x = Math.max(margin, Math.min(placement.x, vw - menuRect.width - margin));
         placement.y = Math.max(margin, Math.min(placement.y, vh - menuRect.height - margin));
         
-        return placement;
-    }
-
-    // Smart status bubble placement
-    calculateStatusPlacement(badgeRect, statusRect) {
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
-        const margin = this.SAFE_MARGIN;
-        
-        let placement = {
-            x: badgeRect.left + (badgeRect.width - statusRect.width) / 2,
-            y: badgeRect.bottom + 8,
-            anchorY: 'below',
-            classes: []
-        };
-        
-        // Flip above if badge is in bottom 40% of screen
-        if (badgeRect.bottom > vh * 0.6) {
-            placement.y = badgeRect.top - statusRect.height - 8;
-            placement.anchorY = 'above';
-            placement.classes.push('status--above');
-        }
-        
-        // Horizontal centering with edge protection
-        if (placement.x < margin) {
-            placement.x = margin;
-            placement.classes.push('status--left-aligned');
-        } else if (placement.x + statusRect.width > vw - margin) {
-            placement.x = vw - statusRect.width - margin;
-            placement.classes.push('status--right-aligned');
+        // Fallback: center on screen if still doesn't fit
+        if (menuRect.width > vw - margin * 2 || menuRect.height > vh - margin * 2) {
+            placement.x = (vw - menuRect.width) / 2;
+            placement.y = (vh - menuRect.height) / 2;
+            placement.classes.push('menu--centered');
         }
         
         return placement;
     }
 
-    // Apply menu positioning
-    applyMenuPosition(menu, badgeRect) {
-        // Get menu dimensions
-        menu.style.opacity = '0';
-        menu.style.pointerEvents = 'none';
-        menu.classList.add('measuring');
-        
-        const menuRect = menu.getBoundingClientRect();
-        const placement = this.calculateMenuPlacement(badgeRect, menuRect);
-        
-        // Portal to top layer if needed for clipping escape
-        const portaledMenu = this.shouldPortal() ? 
-            this.portalMenuToTopLayer(menu, badgeRect) : menu;
-        
-        // Apply positioning
-        portaledMenu.style.left = `${placement.x}px`;
-        portaledMenu.style.top = `${placement.y}px`;
-        portaledMenu.style.maxHeight = `calc(100vh - ${this.SAFE_MARGIN * 2}px)`;
-        portaledMenu.style.overflowY = 'auto';
-        
-        // Apply placement classes
-        portaledMenu.classList.remove('measuring');
-        placement.classes.forEach(cls => portaledMenu.classList.add(cls));
-        
-        // Show menu
-        portaledMenu.style.opacity = '';
-        portaledMenu.style.pointerEvents = '';
-        
-        return portaledMenu;
-    }
-
-    // Check if we need to portal (body has transforms)
+    // Check if we need to portal (body has transforms or overflow issues)
     shouldPortal() {
         const bodyStyle = getComputedStyle(document.body);
         return bodyStyle.transform !== 'none' || 
@@ -155,71 +273,109 @@ class SafeSignalBadgePositioning {
                bodyStyle.position === 'fixed';
     }
 
-    // Update status bubble smart positioning
-    updateStatusBubblePosition() {
-        const badge = this.shadowRoot?.querySelector('.badge');
-        const statusEl = this.shadowRoot?.querySelector('.badge-status');
+    // Apply menu positioning
+    applyMenuPosition(menu, badgeRect) {
+        // First, move to top layer (force for now while debugging)
+        let targetMenu = this.moveMenuToTopLayer(menu);
         
-        if (!badge || !statusEl) return;
+        // Always position against the viewport, even when not portaled
+        targetMenu.style.position = 'fixed';
+        targetMenu.style.right = 'auto';
+        targetMenu.style.bottom = 'auto';
         
-        this.positioning.updateStatusBubblePosition(badge, statusEl);
+        // Make visible but transparent for measurement
+        targetMenu.style.opacity = '0';
+        targetMenu.style.pointerEvents = 'none';
+        targetMenu.classList.add('measuring');
+        targetMenu.classList.add('open'); // Add open class for proper size
+        
+        // Measure after it's in the right container
+        const menuRect = targetMenu.getBoundingClientRect();
+        const placement = this.calculateMenuPlacement(badgeRect, menuRect);
+        
+        // Apply positioning
+        targetMenu.style.left = `${placement.x}px`;
+        targetMenu.style.top = `${placement.y}px`;
+        targetMenu.style.maxHeight = `calc(100vh - ${this.SAFE_MARGIN * 2}px)`;
+        targetMenu.style.overflowY = 'auto';
+        
+        // Apply placement classes
+        targetMenu.classList.remove('measuring');
+        placement.classes.forEach(cls => targetMenu.classList.add(cls));
+        
+        // Force visibility explicitly
+        targetMenu.style.opacity = '1';
+        targetMenu.style.pointerEvents = 'auto';
+        
+        // Store reference to active menu
+        this.activeMenuEl = targetMenu;
+        
+        // Re-attach event handlers since this was moved to portal
+        this.reattachMenuEventHandlers(targetMenu);
+        
+        return targetMenu;
     }
 
-    // Enhanced viewport guards
-    addViewportGuards() {
-        // Add responsive styles to prevent cut-off
-        const style = document.createElement('style');
-        style.textContent = `
-            .safesignal-badge .badge-menu {
-                max-height: calc(100vh - 32px);
-                overflow-y: auto;
-                box-sizing: border-box;
-            }
-            
-            .safesignal-badge .badge-status {
-                max-width: min(280px, calc(100vw - 32px));
-                word-wrap: break-word;
-                white-space: normal;
-                box-sizing: border-box;
-            }
-            
-            .safesignal-badge .menu--above {
-                transform-origin: bottom center;
-            }
-            
-            .safesignal-badge .menu--left {
-                transform-origin: top right;
-            }
-            
-            .safesignal-badge .status--above .badge-status {
-                bottom: 100%;
-                top: auto;
-                margin-bottom: 8px;
-                margin-top: 0;
-            }
-            
-            .safesignal-badge .status--left-aligned .badge-status {
-                left: 0;
-                transform: none;
-            }
-            
-            .safesignal-badge .status--right-aligned .badge-status {
-                right: 0;
-                left: auto;
-                transform: none;
-            }
-        `;
+    // Re-attach event handlers to portaled menu
+    reattachMenuEventHandlers(portaledMenu) {
+        // Prevent clicks from closing menu
+        portaledMenu.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
         
-        this.shadowRoot.appendChild(style);
+        // Re-attach position option handlers
+        const positionOptions = portaledMenu.querySelectorAll('.position-option');
+        positionOptions.forEach(option => {
+            option.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const anchor = option.dataset.position;
+                // Trigger custom event that badge can listen for
+                document.dispatchEvent(new CustomEvent('safesignal-position-select', {
+                    detail: { anchor }
+                }));
+            });
+        });
+        
+        // Re-attach hide site handler
+        const hideSiteButton = portaledMenu.querySelector('[data-action="hide-site"]');
+        if (hideSiteButton) {
+            hideSiteButton.addEventListener('click', (e) => {
+                e.stopPropagation();
+                document.dispatchEvent(new CustomEvent('safesignal-hide-site'));
+            });
+        }
+    }
+
+    // Close and clean up menu
+    closeMenu() {
+        if (this.activeMenuEl) {
+            console.log('[SafeSignal] Closing menu:', this.activeMenuEl);
+            
+            // Remove all menu state classes and hide
+            this.activeMenuEl.classList.remove('open', 'menu--above', 'menu--left', 'menu--centered');
+            this.activeMenuEl.style.opacity = '0';
+            this.activeMenuEl.style.pointerEvents = 'none';
+            
+            // If it was portaled, restore it to shadow DOM
+            if (this.activeMenuEl.parentNode === this.topLayerContainer) {
+                this.restoreMenuToShadow(this.activeMenuEl);
+            }
+            
+            this.activeMenuEl = null;
+        }
     }
 
     // Cleanup portaled elements
     cleanup() {
+        if (this.activeMenuEl && this.activeMenuEl.parentNode === this.topLayerContainer) {
+            this.restoreMenuToShadow(this.activeMenuEl);
+        }
+        
         if (this.topLayerContainer && this.topLayerContainer.parentNode) {
             this.topLayerContainer.parentNode.removeChild(this.topLayerContainer);
         }
         this.topLayerContainer = null;
-        this.menuPortaled = false;
+        this.activeMenuEl = null;
     }
 }
 
@@ -231,12 +387,15 @@ class SafeSignalBadge {
         this.currentState = 'checking';
         this.isVisible = true;
         
-        // Enhanced positioning system
-        this.positioning = {
+        // Separate positioning state from positioning helper
+        this.positionState = {
             anchor: 'bottom-right',
             offsetX: 0,
             offsetY: 0
         };
+        
+        // Positioning helper (will be initialized after shadow root)
+        this.positioning = null;
         
         // SPA Detection properties (simplified)
         this.currentUrl = window.location.href;
@@ -249,7 +408,7 @@ class SafeSignalBadge {
         
         // UI state
         this.isMenuOpen = false;
-        this.proximityCheckInterval = null; // Track the interval
+        this.proximityCheckInterval = null;
         this.userPreferences = {
             positioning: { anchor: 'bottom-right', offsetX: 0, offsetY: 0 },
             hiddenSites: new Set()
@@ -272,6 +431,9 @@ class SafeSignalBadge {
 
         this.createShadowDOMBadge();
         this.attachEventListeners();
+        
+        // Initialize positioning helper after shadow root AND event listeners are created
+        this.positioning = new SafeSignalBadgePositioning(this.shadowRoot);
         this.setupSPADetection();
         
         // Apply saved positioning
@@ -314,8 +476,8 @@ class SafeSignalBadge {
     }
     
     getAnchorPositions() {
-        const padding = 20; // Increased for better safe margins
-        const systemBarHeight = 100; // More conservative for mobile
+        const padding = 20;
+        const systemBarHeight = 100;
         const viewportWidth = window.innerWidth;
         const viewportHeight = window.innerHeight;
         
@@ -366,7 +528,7 @@ class SafeSignalBadge {
         badge.style.bottom = 'auto';
         
         // Update internal state
-        this.positioning = { anchor, offsetX, offsetY };
+        this.positionState = { anchor, offsetX, offsetY };
         
         // Update active state in UI
         this.updatePositionGridUI(anchor);
@@ -497,9 +659,9 @@ class SafeSignalBadge {
     // === BADGE CREATION ===
 
     createShadowDOMBadge() {
+        // Mount to documentElement to avoid body transform issues
         this.badgeContainer = document.createElement('div');
         this.badgeContainer.id = 'safesignal-badge-container';
-        // Use open mode for dev/debugging - change to 'closed' for production
         this.shadowRoot = this.badgeContainer.attachShadow({ mode: 'open' });
         
         this.shadowRoot.innerHTML = `
@@ -521,12 +683,11 @@ class SafeSignalBadge {
                     font-weight: 600;
                     cursor: pointer;
                     user-select: none;
-                    z-index: 999999; /* Reduced from 2147483647 */
+                    z-index: 999999;
                     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.1);
                     transition: all 0.2s ease;
                     transform: scale(1);
-                    /* Removed backdrop-filter for lighter feel */
-                    touch-action: manipulation; /* Better for touch, allows page pan */
+                    touch-action: manipulation;
                 }
                 
                 @media (prefers-reduced-motion: reduce) {
@@ -557,7 +718,6 @@ class SafeSignalBadge {
                     line-height: 1.2;
                 }
                 
-                /* Smart status positioning - above if at bottom, below if at top */
                 .badge.bottom-positioned .badge-status {
                     bottom: 100%;
                     margin-bottom: 8px;
@@ -860,7 +1020,8 @@ class SafeSignalBadge {
             </div>
         `;
         
-        document.body.appendChild(this.badgeContainer);
+        // Mount to documentElement to avoid body transform issues
+        document.documentElement.appendChild(this.badgeContainer);
     }
 
     attachEventListeners() {
@@ -915,23 +1076,52 @@ class SafeSignalBadge {
             e.stopPropagation();
         });
         
+        // Listen for custom events from portaled menu
+        document.addEventListener('safesignal-position-select', (e) => {
+            this.handlePositionSelect(e.detail.anchor);
+        });
+        
+        document.addEventListener('safesignal-hide-site', () => {
+            this.toggleSiteVisibility();
+        });
+        
         // Window resize handler with throttling
         let resizeRaf = null;
         const onResize = () => {
             if (resizeRaf) return;
             resizeRaf = requestAnimationFrame(() => {
                 resizeRaf = null;
-                this.applyPositioning(this.positioning);
-                this.updateStatusBubblePosition(); // Check if we need to flip status bubble
+                this.applyPositioning(this.positionState);
+                this.updateStatusBubblePosition();
+                
+                // Reposition menu if open
+                if (this.isMenuOpen && this.positioning.activeMenuEl) {
+                    const badgeRect = this.getBadgeRect();
+                    this.positioning.applyMenuPosition(this.positioning.activeMenuEl, badgeRect);
+                }
             });
         };
         window.addEventListener('resize', onResize);
         this.cleanupHandlers.push(() => window.removeEventListener('resize', onResize));
         
+        // Listen to visual viewport changes (mobile keyboard)
+        if (window.visualViewport) {
+            const onViewportChange = () => {
+                if (this.isMenuOpen && this.positioning.activeMenuEl) {
+                    const badgeRect = this.getBadgeRect();
+                    this.positioning.applyMenuPosition(this.positioning.activeMenuEl, badgeRect);
+                }
+            };
+            window.visualViewport.addEventListener('resize', onViewportChange);
+            this.cleanupHandlers.push(() => 
+                window.visualViewport?.removeEventListener('resize', onViewportChange)
+            );
+        }
+        
         // Input proximity detection with proper cleanup tracking
         this.proximityCheckInterval = setInterval(() => {
             this.checkInputProximity();
-        }, 2000); // Reduced frequency
+        }, 2000);
         this.cleanupHandlers.push(() => clearInterval(this.proximityCheckInterval));
     }
 
@@ -955,7 +1145,6 @@ class SafeSignalBadge {
                    el.isContentEditable;
         });
         
-        // For now, just log this - in the future could show hint in menu
         if (nearInput) {
             console.log('SafeSignal: Badge near input field');
         }
@@ -1078,6 +1267,10 @@ class SafeSignalBadge {
     // === MENU SYSTEM ===
 
     toggleMenu() {
+        console.log('[SafeSignal] menuButton clicked, opening=', !this.isMenuOpen);
+        console.log('[SafeSignal] positioning helper exists:', !!this.positioning);
+        console.log('[SafeSignal] applyMenuPosition method exists:', !!this.positioning?.applyMenuPosition);
+        
         this.isMenuOpen = !this.isMenuOpen;
         const menu = this.shadowRoot.querySelector('.badge-menu');
         const badge = this.shadowRoot.querySelector('.badge');
@@ -1086,47 +1279,67 @@ class SafeSignalBadge {
         if (this.isMenuOpen) {
             const badgeRect = badge.getBoundingClientRect();
             
-            // Apply smart positioning
-            const positionedMenu = this.positioning.applyMenuPosition(menu, badgeRect);
+            // Safety check before calling positioning helper
+            if (!this.positioning || !this.positioning.applyMenuPosition) {
+                console.error('[SafeSignal] Positioning helper not properly initialized');
+                // Fallback: simple positioning
+                menu.style.position = 'fixed';
+                menu.style.left = `${badgeRect.right + 8}px`;
+                menu.style.top = `${badgeRect.bottom + 8}px`;
+                menu.classList.add('open');
+            } else {
+                // Apply smart positioning using the helper
+                this.positioning.applyMenuPosition(menu, badgeRect);
+            }
             
-            positionedMenu.classList.add('open');
             badge.classList.add('menu-open');
             menuButton.setAttribute('aria-expanded', 'true');
             
             // Focus first interactive element
-            const firstButton = positionedMenu.querySelector('.menu-item, .position-option');
+            const activeMenu = this.positioning?.activeMenuEl || menu;
+            const firstButton = activeMenu.querySelector('.menu-item, .position-option');
             if (firstButton) firstButton.focus();
             
-            // Self-check after layout
+            // Re-measure and adjust after layout settles
             requestAnimationFrame(() => {
-                const menuRect = positionedMenu.getBoundingClientRect();
-                const vw = window.innerWidth;
-                const vh = window.innerHeight;
+                const activeMenu = this.positioning?.activeMenuEl || menu;
+                const menuRect = activeMenu.getBoundingClientRect();
+                const vw = window.visualViewport?.width || window.innerWidth;
+                const vh = window.visualViewport?.height || window.innerHeight;
+                
+                console.log('[SafeSignal] Menu positioned at:', {
+                    left: activeMenu.style.left,
+                    top: activeMenu.style.top,
+                    position: activeMenu.style.position,
+                    visible: menuRect.width > 0 && menuRect.height > 0,
+                    rect: menuRect
+                });
                 
                 // Final bounds check and adjustment
-                if (menuRect.right > vw - this.positioning.SAFE_MARGIN ||
-                    menuRect.bottom > vh - this.positioning.SAFE_MARGIN) {
+                if (this.positioning && (menuRect.right > vw - 16 || menuRect.bottom > vh - 16)) {
                     console.log('SafeSignal: Menu overflow detected, adjusting...');
-                    this.positioning.applyMenuPosition(positionedMenu, badgeRect);
+                    this.positioning.applyMenuPosition(activeMenu, badgeRect);
                 }
             });
         } else {
-            menu.classList.remove('open');
+            if (this.positioning && this.positioning.closeMenu) {
+                this.positioning.closeMenu();
+            } else {
+                menu.classList.remove('open');
+            }
             badge.classList.remove('menu-open');
             menuButton.setAttribute('aria-expanded', 'false');
             menuButton.focus();
         }
     }
 
-
     closeMenu() {
         if (this.isMenuOpen) {
             this.isMenuOpen = false;
-            const menu = this.shadowRoot.querySelector('.badge-menu');
             const badge = this.shadowRoot.querySelector('.badge');
             const menuButton = this.shadowRoot.querySelector('.menu-button');
             
-            menu.classList.remove('open');
+            this.positioning.closeMenu();
             badge.classList.remove('menu-open');
             menuButton.setAttribute('aria-expanded', 'false');
         }
@@ -1205,7 +1418,6 @@ class SafeSignalBadge {
             window.removeEventListener('pagehide', pagehideHandler);
         });
         
-        // Simplified: No mutation observer for now to reduce complexity
         console.log('SafeSignal: Simplified SPA detection active (history changes only)');
     }
 
@@ -1326,6 +1538,11 @@ class SafeSignalBadge {
         if (this.proximityCheckInterval) {
             clearInterval(this.proximityCheckInterval);
             this.proximityCheckInterval = null;
+        }
+        
+        // Clean up positioning helper
+        if (this.positioning) {
+            this.positioning.cleanup();
         }
         
         // Run all cleanup handlers
