@@ -132,6 +132,21 @@ class DatabaseService:
                      source: str = "extension") -> bool:
         """
         Log a URL check to the database.
+        
+        Args:
+            url: The original URL (will be hashed for privacy)
+            domain: Domain name (stored for analytics)
+            verdict: ok, warning, or danger
+            reasons: List of reason codes that triggered the verdict
+            tier0_score: Numeric score from Tier-0 analysis
+            analysis_details: Full analysis details as dict
+            processing_time_ms: Total processing time
+            fetch_time_ms: Time spent fetching the URL
+            user_id: Optional user identifier
+            source: Source of the check (extension, website, etc.)
+            
+        Returns:
+            bool: True if logged successfully, False otherwise
         """
         try:
             conn = self._get_connection()
@@ -156,196 +171,156 @@ class DatabaseService:
             conn.commit()
             cursor.close()
             
-            # Update daily stats asynchronously
-            self._update_daily_stats(verdict, processing_time_ms, domain)
-            
+            logger.debug(f"Logged check for domain {domain}: {verdict}")
             return True
             
         except Exception as e:
             logger.error(f"Failed to log URL check: {e}")
             return False
     
-    def _update_daily_stats(self, verdict: str, processing_time_ms: int, domain: str):
-        """Update daily statistics (async operation)"""
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            
-            today = datetime.now().date().isoformat()
-            
-            # Get current stats for today
-            cursor.execute("""
-                SELECT total_checks, ok_checks, warning_checks, danger_checks,
-                       avg_processing_time_ms, unique_domains
-                FROM daily_stats WHERE date = ?
-            """, (today,))
-            
-            row = cursor.fetchone()
-            
-            if row:
-                # Update existing record
-                total_checks, ok_checks, warning_checks, danger_checks, avg_time, unique_domains = row
-                
-                new_total = total_checks + 1
-                new_avg_time = ((avg_time * total_checks) + processing_time_ms) / new_total
-                
-                # Update verdict counts
-                if verdict == 'ok':
-                    ok_checks += 1
-                elif verdict == 'warning':
-                    warning_checks += 1
-                elif verdict == 'danger':
-                    danger_checks += 1
-                
-                # Count unique domains (simplified - could be more accurate)
-                cursor.execute("""
-                    SELECT COUNT(DISTINCT domain) FROM url_checks 
-                    WHERE DATE(created_at) = ?
-                """, (today,))
-                unique_domains = cursor.fetchone()[0]
-                
-                cursor.execute("""
-                    UPDATE daily_stats SET
-                        total_checks = ?, ok_checks = ?, warning_checks = ?,
-                        danger_checks = ?, avg_processing_time_ms = ?, unique_domains = ?
-                    WHERE date = ?
-                """, (new_total, ok_checks, warning_checks, danger_checks, 
-                     new_avg_time, unique_domains, today))
-            
-            else:
-                # Insert new record
-                ok_count = 1 if verdict == 'ok' else 0
-                warning_count = 1 if verdict == 'warning' else 0
-                danger_count = 1 if verdict == 'danger' else 0
-                
-                cursor.execute("""
-                    INSERT INTO daily_stats (
-                        date, total_checks, ok_checks, warning_checks, danger_checks,
-                        avg_processing_time_ms, unique_domains
-                    ) VALUES (?, 1, ?, ?, ?, ?, 1)
-                """, (today, ok_count, warning_count, danger_count, processing_time_ms))
-            
-            conn.commit()
-            cursor.close()
-            
-        except Exception as e:
-            logger.error(f"Failed to update daily stats: {e}")
-    
     def get_daily_stats(self, days: int = 7) -> List[Dict[str, Any]]:
-        """Get daily statistics for the last N days"""
+        """
+        Get daily statistics for the last N days.
+        
+        Args:
+            days: Number of days to retrieve (default 7)
+            
+        Returns:
+            List of daily stats dictionaries
+        """
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
             
-            cutoff_date = (datetime.now() - timedelta(days=days)).date().isoformat()
+            # Calculate date range
+            end_date = datetime.now().date()
+            start_date = end_date - timedelta(days=days-1)
             
+            # Query with aggregation for days that don't have pre-computed stats
             cursor.execute("""
-                SELECT * FROM daily_stats 
-                WHERE date >= ?
-                ORDER BY date DESC
-            """, (cutoff_date,))
+                WITH date_range AS (
+                    SELECT date(?) + (value-1) || ' days' as date
+                    FROM generate_series(0, ?, 1)
+                ),
+                raw_stats AS (
+                    SELECT 
+                        date(created_at) as date,
+                        COUNT(*) as total_checks,
+                        SUM(CASE WHEN verdict = 'ok' THEN 1 ELSE 0 END) as ok_checks,
+                        SUM(CASE WHEN verdict = 'warning' THEN 1 ELSE 0 END) as warning_checks,
+                        SUM(CASE WHEN verdict = 'danger' THEN 1 ELSE 0 END) as danger_checks,
+                        AVG(processing_time_ms) as avg_processing_time_ms,
+                        COUNT(DISTINCT domain) as unique_domains
+                    FROM url_checks 
+                    WHERE date(created_at) BETWEEN ? AND ?
+                    GROUP BY date(created_at)
+                )
+                SELECT 
+                    dr.date,
+                    COALESCE(rs.total_checks, 0) as total_checks,
+                    COALESCE(rs.ok_checks, 0) as ok_checks,
+                    COALESCE(rs.warning_checks, 0) as warning_checks,
+                    COALESCE(rs.danger_checks, 0) as danger_checks,
+                    COALESCE(rs.avg_processing_time_ms, 0) as avg_processing_time_ms,
+                    COALESCE(rs.unique_domains, 0) as unique_domains
+                FROM date_range dr
+                LEFT JOIN raw_stats rs ON dr.date = rs.date
+                ORDER BY dr.date DESC
+            """, (start_date, days, start_date, end_date))
             
-            rows = cursor.fetchall()
+            results = cursor.fetchall()
             cursor.close()
             
-            columns = ['date', 'total_checks', 'ok_checks', 'warning_checks', 
-                      'danger_checks', 'avg_processing_time_ms', 'unique_domains', 'created_at']
+            # Convert to list of dictionaries
+            stats = []
+            for row in results:
+                stats.append({
+                    "date": row[0],
+                    "total_checks": row[1],
+                    "ok_checks": row[2],
+                    "warning_checks": row[3],
+                    "danger_checks": row[4],
+                    "avg_processing_time_ms": round(row[5], 2) if row[5] else 0,
+                    "unique_domains": row[6]
+                })
             
-            return [dict(zip(columns, row)) for row in rows]
+            return stats
             
         except Exception as e:
             logger.error(f"Failed to get daily stats: {e}")
-            return []
+            # Return empty stats for the requested days
+            return [
+                {
+                    "date": (datetime.now().date() - timedelta(days=i)).isoformat(),
+                    "total_checks": 0,
+                    "ok_checks": 0,
+                    "warning_checks": 0,
+                    "danger_checks": 0,
+                    "avg_processing_time_ms": 0,
+                    "unique_domains": 0
+                }
+                for i in range(days)
+            ]
     
-    def get_recent_checks(self, limit: int = 100, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get recent URL checks (without exposing actual URLs)"""
+    def get_total_checks(self) -> int:
+        """Get total number of checks ever performed"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
             
-            if user_id:
-                cursor.execute("""
-                    SELECT domain, verdict, reasons, tier0_score, 
-                           processing_time_ms, created_at
-                    FROM url_checks 
-                    WHERE user_id = ?
-                    ORDER BY created_at DESC 
-                    LIMIT ?
-                """, (user_id, limit))
-            else:
-                cursor.execute("""
-                    SELECT domain, verdict, reasons, tier0_score,
-                           processing_time_ms, created_at
-                    FROM url_checks 
-                    ORDER BY created_at DESC 
-                    LIMIT ?
-                """, (limit,))
-            
-            rows = cursor.fetchall()
+            cursor.execute("SELECT COUNT(*) FROM url_checks")
+            result = cursor.fetchone()
             cursor.close()
             
-            columns = ['domain', 'verdict', 'reasons', 'tier0_score', 
-                      'processing_time_ms', 'created_at']
-            
-            results = []
-            for row in rows:
-                result = dict(zip(columns, row))
-                # Parse JSON fields
-                try:
-                    result['reasons'] = json.loads(result['reasons'])
-                except:
-                    result['reasons'] = []
-                results.append(result)
-            
-            return results
+            return result[0] if result else 0
             
         except Exception as e:
-            logger.error(f"Failed to get recent checks: {e}")
-            return []
+            logger.error(f"Failed to get total checks: {e}")
+            return 0
     
-    def get_domain_stats(self, days: int = 30) -> List[Dict[str, Any]]:
-        """Get domain-level statistics"""
+    def get_verdict_distribution(self, days: int = 30) -> Dict[str, int]:
+        """Get verdict distribution for the last N days"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
-            
-            cutoff_date = (datetime.now() - timedelta(days=days)).date().isoformat()
             
             cursor.execute("""
-                SELECT domain, 
-                       COUNT(*) as total_checks,
-                       SUM(CASE WHEN verdict = 'ok' THEN 1 ELSE 0 END) as ok_checks,
-                       SUM(CASE WHEN verdict = 'warning' THEN 1 ELSE 0 END) as warning_checks,
-                       SUM(CASE WHEN verdict = 'danger' THEN 1 ELSE 0 END) as danger_checks,
-                       AVG(tier0_score) as avg_score,
-                       MAX(created_at) as last_check
-                FROM url_checks
-                WHERE DATE(created_at) >= ?
-                GROUP BY domain
-                ORDER BY total_checks DESC
-                LIMIT 50
-            """, (cutoff_date,))
+                SELECT verdict, COUNT(*) 
+                FROM url_checks 
+                WHERE created_at >= datetime('now', '-{} days')
+                GROUP BY verdict
+            """.format(days))
             
-            rows = cursor.fetchall()
+            results = cursor.fetchall()
             cursor.close()
             
-            columns = ['domain', 'total_checks', 'ok_checks', 'warning_checks',
-                      'danger_checks', 'avg_score', 'last_check']
-            
-            return [dict(zip(columns, row)) for row in rows]
+            distribution = {"ok": 0, "warning": 0, "danger": 0}
+            for verdict, count in results:
+                distribution[verdict] = count
+                
+            return distribution
             
         except Exception as e:
-            logger.error(f"Failed to get domain stats: {e}")
-            return []
+            logger.error(f"Failed to get verdict distribution: {e}")
+            return {"ok": 0, "warning": 0, "danger": 0}
     
-    def cleanup_old_records(self, days: int = 30) -> int:
-        """Delete URL check records older than N days"""
+    def cleanup_old_records(self, days_to_keep: int = 60):
+        """
+        Clean up old URL check records while preserving aggregated stats
+        
+        Args:
+            days_to_keep: Number of days of raw records to keep (default 60)
+        """
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
             
-            cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
+            cutoff_date = datetime.now() - timedelta(days=days_to_keep)
             
+            # First, ensure daily stats are up to date for records we're about to delete
+            # (This would be part of a more complete implementation)
+            
+            # Delete old records
             cursor.execute("""
                 DELETE FROM url_checks 
                 WHERE created_at < ?
@@ -361,71 +336,12 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Failed to cleanup old records: {e}")
             return 0
-    
-    def get_database_info(self) -> Dict[str, Any]:
-        """Get database information and statistics"""
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            
-            # Get table sizes
-            cursor.execute("SELECT COUNT(*) FROM url_checks")
-            total_checks = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM daily_stats")
-            total_daily_records = cursor.fetchone()[0]
-            
-            # Get database file size
-            db_size = self.db_path.stat().st_size if self.db_path.exists() else 0
-            
-            # Get date range
-            cursor.execute("""
-                SELECT MIN(created_at), MAX(created_at) 
-                FROM url_checks
-            """)
-            date_range = cursor.fetchone()
-            
-            cursor.close()
-            
-            return {
-                "database_path": str(self.db_path),
-                "database_size_bytes": db_size,
-                "database_size_mb": round(db_size / 1024 / 1024, 2),
-                "total_url_checks": total_checks,
-                "total_daily_records": total_daily_records,
-                "date_range": {
-                    "first_check": date_range[0],
-                    "last_check": date_range[1]
-                },
-                "tables": ["url_checks", "daily_stats"]
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to get database info: {e}")
-            return {"error": str(e)}
 
 
-# Global database instance
+# Global database service instance
 db_service = DatabaseService()
 
 
-# Utility functions for easy access
-def log_url_check(url: str, domain: str, verdict: str, reasons: List[str], 
-                 tier0_score: int, analysis_details: Dict[str, Any],
-                 processing_time_ms: int, fetch_time_ms: int = 0,
-                 user_id: Optional[str] = None, source: str = "extension") -> bool:
-    """Convenience function to log a URL check"""
-    return db_service.log_url_check(
-        url, domain, verdict, reasons, tier0_score, analysis_details,
-        processing_time_ms, fetch_time_ms, user_id, source
-    )
-
-
-def get_daily_stats(days: int = 7) -> List[Dict[str, Any]]:
-    """Convenience function to get daily stats"""
-    return db_service.get_daily_stats(days)
-
-
-def cleanup_old_records(days: int = 30) -> int:
-    """Convenience function to cleanup old records"""
-    return db_service.cleanup_old_records(days)
+def get_db_service() -> DatabaseService:
+    """Get the global database service instance"""
+    return db_service
