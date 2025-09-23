@@ -77,9 +77,9 @@ async def health_check():
     """Simple health check endpoint"""
     return {
         "status": "healthy",
-        "version": "1.0.0-phase2.1",
+        "version": "1.0.0-phase2.3",
         "timestamp": time.time(),
-        "phase": "2.1 - Server-Side URL Fetching"
+        "phase": "2.3 - Tier-0 + Domain Reputation + Heuristics"
     }
 
 # Root endpoint
