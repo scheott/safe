@@ -192,41 +192,20 @@ class DatabaseService:
             conn = self._get_connection()
             cursor = conn.cursor()
             
-            # Calculate date range
-            end_date = datetime.now().date()
-            start_date = end_date - timedelta(days=days-1)
-            
-            # Query with aggregation for days that don't have pre-computed stats
+            # SQLite-safe daily query (works on all versions)
             cursor.execute("""
-                WITH date_range AS (
-                    SELECT date(?) + (value - 1) * interval '1 day' as date
-                    FROM generate_series(0, ?) as t(value)
-                ),
-                daily_data AS (
-                    SELECT 
-                        date(created_at) as check_date,
-                        COUNT(*) as total_checks,
-                        SUM(CASE WHEN verdict = 'ok' THEN 1 ELSE 0 END) as ok_checks,
-                        SUM(CASE WHEN verdict = 'warning' THEN 1 ELSE 0 END) as warning_checks,
-                        SUM(CASE WHEN verdict = 'danger' THEN 1 ELSE 0 END) as danger_checks,
-                        AVG(processing_time_ms) as avg_processing_time_ms,
-                        COUNT(DISTINCT domain) as unique_domains
-                    FROM url_checks 
-                    WHERE date(created_at) >= ?
-                    GROUP BY date(created_at)
-                )
-                SELECT 
-                    ? as date,
-                    COALESCE(dd.total_checks, 0) as total_checks,
-                    COALESCE(dd.ok_checks, 0) as ok_checks,
-                    COALESCE(dd.warning_checks, 0) as warning_checks,
-                    COALESCE(dd.danger_checks, 0) as danger_checks,
-                    COALESCE(dd.avg_processing_time_ms, 0) as avg_processing_time_ms,
-                    COALESCE(dd.unique_domains, 0) as unique_domains
-                FROM daily_data dd
-                WHERE dd.check_date >= ?
-                ORDER BY check_date DESC
-            """, (start_date, days, start_date, start_date))
+                SELECT substr(created_at,1,10) AS day,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN verdict='ok' THEN 1 ELSE 0 END) AS ok,
+                    SUM(CASE WHEN verdict='warning' THEN 1 ELSE 0 END) AS warning,
+                    SUM(CASE WHEN verdict='danger' THEN 1 ELSE 0 END) AS danger,
+                    AVG(processing_time_ms) AS avg_processing_ms,
+                    COUNT(DISTINCT domain) AS unique_domains
+                FROM url_checks
+                WHERE date(created_at) >= date('now', ? || ' day')
+                GROUP BY day
+                ORDER BY day DESC
+            """, (f'-{days}',))
             
             results = cursor.fetchall()
             cursor.close()
@@ -244,29 +223,33 @@ class DatabaseService:
                     "unique_domains": row[6]
                 })
             
-            # Fill in missing days with zeros
-            existing_dates = {stat["date"] for stat in stats}
-            for i in range(days):
-                check_date = (end_date - timedelta(days=i)).isoformat()
-                if check_date not in existing_dates:
-                    stats.append({
-                        "date": check_date,
-                        "total_checks": 0,
-                        "ok_checks": 0,
-                        "warning_checks": 0,
-                        "danger_checks": 0,
-                        "avg_processing_time_ms": 0,
-                        "unique_domains": 0
-                    })
-            
-            # Sort by date descending
-            stats.sort(key=lambda x: x["date"], reverse=True)
+            # Fill in missing days with zeros if needed
+            if len(stats) < days:
+                existing_dates = {stat["date"] for stat in stats}
+                from datetime import datetime, timedelta
+                
+                for i in range(days):
+                    check_date = (datetime.now().date() - timedelta(days=i)).isoformat()
+                    if check_date not in existing_dates:
+                        stats.append({
+                            "date": check_date,
+                            "total_checks": 0,
+                            "ok_checks": 0,
+                            "warning_checks": 0,
+                            "danger_checks": 0,
+                            "avg_processing_time_ms": 0,
+                            "unique_domains": 0
+                        })
+                
+                # Sort by date descending
+                stats.sort(key=lambda x: x["date"], reverse=True)
             
             return stats[:days]
             
         except Exception as e:
             logger.error(f"Failed to get daily stats: {e}")
             # Return empty stats for the requested days
+            from datetime import datetime, timedelta
             return [
                 {
                     "date": (datetime.now().date() - timedelta(days=i)).isoformat(),
@@ -279,7 +262,8 @@ class DatabaseService:
                 }
                 for i in range(days)
             ]
-    
+        
+
     def get_total_checks(self) -> int:
         """Get total number of checks ever performed"""
         try:
@@ -460,7 +444,7 @@ class DatabaseService:
             cursor.close()
             
             return {
-                "total_checks": total_checks,
+                "total_checks": total_checks,  # Match the key expected by test
                 "unique_domains": unique_domains,
                 "date_range": {
                     "earliest": date_range[0],

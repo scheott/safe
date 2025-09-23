@@ -4,6 +4,7 @@ from pydantic import BaseModel, HttpUrl
 import logging
 import time
 from typing import Optional, List, Dict, Any
+from urllib.parse import urlparse
 
 from ..services.url_fetcher import URLFetcher, FetchResult
 from ..services.url_normalizer import URLNormalizer
@@ -62,12 +63,10 @@ async def check_url(request: CheckRequest, req: Request):
         # Step 1: Normalize URL
         logger.info(f"Starting check for URL: {url_str}")
         normalization_result = url_normalizer.normalize_url(url_str)
-
         
         # Step 2: Fetch page content
         fetch_start = time.time()
         fetch_result = await url_fetcher.fetch_url(normalization_result['normalized_url'])
-
         fetch_time_ms = int((time.time() - fetch_start) * 1000)
         
         # Handle different fetch outcomes
@@ -98,7 +97,7 @@ async def check_url(request: CheckRequest, req: Request):
         try:
             db_service.log_url_check(
                 url=url_str,
-                domain=url_str.split('/')[2] if '//' in url_str else 'unknown',
+                domain=_extract_domain_from_url(url_str),
                 verdict="error",
                 reasons=["processing_error"],
                 tier0_score=-1,
@@ -118,6 +117,28 @@ async def check_url(request: CheckRequest, req: Request):
                 "processing_time_ms": processing_time_ms
             }
         )
+
+def _extract_domain_from_url(url: str) -> str:
+    """Extract domain from URL string safely"""
+    try:
+        parsed = urlparse(url)
+        return parsed.netloc or 'unknown'
+    except:
+        return 'unknown'
+
+def _get_domain_from_results(normalization_result: Dict[str, Any], fetch_result: FetchResult) -> str:
+    """Extract domain from normalization result or fetch result"""
+    # Try normalization result first
+    domain = normalization_result.get('domain')
+    if domain:
+        return domain
+    
+    # Fallback to extracting from final URL
+    try:
+        parsed = urlparse(fetch_result.final_url)
+        return parsed.netloc or 'unknown'
+    except:
+        return 'unknown'
 
 async def _handle_successful_fetch(
     fetch_result: FetchResult,
@@ -139,35 +160,37 @@ async def _handle_successful_fetch(
     # Calculate total processing time
     processing_time_ms = int((time.time() - start_time) * 1000)
     
+    # Extract domain safely
+    domain = _get_domain_from_results(normalization_result, fetch_result)
+    
     # Step 4: Log to database (CRITICAL - Step 1 requirement)
     log_success = False
     try:
         log_success = db_service.log_url_check(
             url=original_url,
-            domain=fetch_result.domain,
+            domain=domain,
             verdict=analysis_result.verdict,
             reasons=analysis_result.reasons,
             tier0_score=analysis_result.score,
             analysis_details={
                 "final_url": fetch_result.final_url,
                 "redirect_count": fetch_result.redirect_count,
-                "content_length": fetch_result.content_length,
-                "removed_tracking_params": getattr(normalization_result, 'removed_params_count', 0),
-                "punycode_detected": getattr(normalization_result, 'punycode_detected', False),
+                "content_length": getattr(fetch_result, 'content_length', len(fetch_result.body_excerpt or '')),
+                "removed_tracking_params": normalization_result.get('removed_params_count', 0),
+                "punycode_detected": normalization_result.get('punycode_info', {}).get('has_punycode', False),
                 "tier0_details": analysis_result.details,
                 "escalate_to_tier1": analysis_result.escalate_to_tier1,
                 "analysis_mode": "full_content"
             },
             processing_time_ms=processing_time_ms,
             fetch_time_ms=fetch_result.fetch_time_ms,
-            user_id=None,  # TODO: Extract from auth when implemented
             source="extension"
         )
         
         if log_success:
-            logger.debug(f"Successfully logged check for {fetch_result.domain}")
+            logger.debug(f"Successfully logged check for {domain}")
         else:
-            logger.warning(f"Failed to log check for {fetch_result.domain}")
+            logger.warning(f"Failed to log check for {domain}")
             
     except Exception as log_error:
         # Don't fail the main request if logging fails
@@ -179,11 +202,11 @@ async def _handle_successful_fetch(
         reasons=analysis_result.reasons,
         summary=analysis_result.details.get('summary'),  # Will be None for Tier-0
         meta={
-            "domain": fetch_result.domain,
+            "domain": domain,
             "title": fetch_result.title,
             "final_url": fetch_result.final_url,
             "redirect_count": fetch_result.redirect_count,
-            "content_length": fetch_result.content_length,
+            "content_length": getattr(fetch_result, 'content_length', len(fetch_result.body_excerpt or '')),
             "fetch_time_ms": fetch_result.fetch_time_ms,
             "analysis_mode": "full_content",
             
@@ -204,7 +227,7 @@ async def _handle_successful_fetch(
         processing_time_ms=processing_time_ms
     )
     
-    logger.info(f"Check completed for {fetch_result.domain}: {analysis_result.verdict} in {processing_time_ms}ms")
+    logger.info(f"Check completed for {domain}: {analysis_result.verdict} in {processing_time_ms}ms")
     return response
 
 async def _handle_fetch_failure(
@@ -236,16 +259,16 @@ async def _handle_fetch_failure(
     
     # Special cases for verdict adjustment
     verdict = analysis_result.verdict
-    if "timeout" in fetch_result.error_reason:
+    if "timeout" in str(fetch_result.error_reason):
         reasons.append("site_slow_response")
-    elif "blocked_by_site" in fetch_result.error_reason:
+    elif "blocked_by_site" in str(fetch_result.error_reason):
         reasons.append("access_restricted")
-    elif "invalid_url" in fetch_result.error_reason:
+    elif "invalid_url" in str(fetch_result.error_reason):
         # Override verdict for invalid URLs
         verdict = "danger"
         analysis_result.score = 4
         reasons = ["invalid_url", "malformed_address"]
-    elif "ConnectError" in fetch_result.error_reason or "timeout" in fetch_result.error_reason:
+    elif "ConnectError" in str(fetch_result.error_reason) or "timeout" in str(fetch_result.error_reason):
         # Network errors for non-reputable domains should be warnings
         domain_score = analysis_result.details.get('domain_analysis', {}).get('reputation_score', 0)
         if domain_score >= 0:  # Not a reputable domain (-1 or higher = not trusted)
@@ -254,12 +277,15 @@ async def _handle_fetch_failure(
                 analysis_result.score = max(analysis_result.score, 2)  # Ensure warning threshold
                 reasons.append("network_error_suspicious")
     
+    # Extract domain safely
+    domain = _get_domain_from_results(normalization_result, fetch_result)
+    
     # Log to database (Step 1 requirement)
     log_success = False
     try:
         log_success = db_service.log_url_check(
             url=original_url,
-            domain=getattr(normalization_result, 'domain', fetch_result.final_url.split('/')[2] if '//' in fetch_result.final_url else 'unknown'),
+            domain=domain,
             verdict=verdict,
             reasons=reasons,
             tier0_score=analysis_result.score,
@@ -283,7 +309,7 @@ async def _handle_fetch_failure(
         reasons=reasons,
         summary=None,
         meta={
-            "domain": normalization_result.get('domain', fetch_result.final_url.split('/')[2] if '//' in fetch_result.final_url else 'unknown'),
+            "domain": domain,
             "final_url": fetch_result.final_url,
             "title": None,
             "fetch_time_ms": fetch_result.fetch_time_ms,
@@ -341,12 +367,15 @@ async def _handle_blocked_response(
         # Likely legitimate site with protection
         final_verdict = "ok"
     
+    # Extract domain safely
+    domain = _get_domain_from_results(normalization_result, fetch_result)
+    
     # Log to database (Step 1 requirement)
     log_success = False
     try:
         log_success = db_service.log_url_check(
             url=original_url,
-            domain=fetch_result.domain,
+            domain=domain,
             verdict=final_verdict,
             reasons=reasons,
             tier0_score=analysis_result.score,
@@ -369,7 +398,7 @@ async def _handle_blocked_response(
         reasons=reasons,
         summary=None,
         meta={
-            "domain": fetch_result.domain,
+            "domain": domain,
             "final_url": fetch_result.final_url,
             "title": fetch_result.title,
             "fetch_time_ms": fetch_result.fetch_time_ms,
@@ -493,47 +522,20 @@ async def cleanup_database(days: int = 30):
 
 # Reputation service endpoints (preserving existing functionality)
 @router.get("/reputation/stats")
-async def get_reputation_stats(req: Request):
-    """Get statistics about loaded reputation data"""
+async def get_reputation_stats():
+    """Get reputation service statistics"""
     try:
-        reputation_service = req.app.state.reputation_service
+        reputation_service = ReputationService()
+        stats = reputation_service.get_stats()
+        
         return {
-            "status": "healthy",
-            "reputation_service": reputation_service.get_stats(),
-            "data_files": [
-                "reputable_domains.json",
-                "brand_domains.json", 
-                "suspicious_indicators.json",
-                "heuristic_weights.json"
-            ]
+            "status": "success",
+            "reputation_stats": stats
         }
     except Exception as e:
         logger.error(f"Error getting reputation stats: {e}")
         return {
             "status": "error",
-            "message": str(e)
+            "error": str(e),
+            "reputation_stats": {}
         }
-
-@router.post("/reputation/reload")
-async def reload_reputation_data(req: Request):
-    """Manually trigger a reload of reputation data"""
-    try:
-        reputation_service = req.app.state.reputation_service
-        success = reputation_service.load_all_data()
-        if success:
-            return {
-                "status": "success",
-                "message": "Reputation data reloaded successfully",
-                "stats": reputation_service.get_stats()
-            }
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to reload reputation data"
-            )
-    except Exception as e:
-        logger.error(f"Error reloading reputation data: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error reloading reputation data: {str(e)}"
-        )
