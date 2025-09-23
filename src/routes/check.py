@@ -61,11 +61,13 @@ async def check_url(request: CheckRequest, req: Request):
     try:
         # Step 1: Normalize URL
         logger.info(f"Starting check for URL: {url_str}")
-        normalization_result = url_normalizer.normalize(url_str)
+        normalization_result = url_normalizer.normalize_url(url_str)
+
         
         # Step 2: Fetch page content
         fetch_start = time.time()
-        fetch_result = await url_fetcher.fetch_url(normalization_result.normalized_url)
+        fetch_result = await url_fetcher.fetch_url(normalization_result['normalized_url'])
+
         fetch_time_ms = int((time.time() - fetch_start) * 1000)
         
         # Handle different fetch outcomes
@@ -191,10 +193,10 @@ async def _handle_successful_fetch(
             "escalate_to_tier1": analysis_result.escalate_to_tier1,
             
             # URL normalization info
-            "normalized_url": getattr(normalization_result, 'normalized_url', fetch_result.final_url),
-            "removed_tracking_params": getattr(normalization_result, 'removed_params_count', 0),
-            "punycode_detected": getattr(normalization_result, 'punycode_detected', False),
-            "is_suspicious_tld": getattr(normalization_result, 'is_suspicious_tld', False),
+            "normalized_url": normalization_result.get('normalized_url', fetch_result.final_url),
+            "removed_tracking_params": normalization_result.get('removed_params_count', 0),
+            "punycode_detected": normalization_result.get('punycode_info', {}).get('has_punycode', False),
+            "is_suspicious_tld": normalization_result.get('is_suspicious_tld', False),
             
             # Database logging status (for debugging)
             "logged_to_db": log_success
@@ -281,7 +283,7 @@ async def _handle_fetch_failure(
         reasons=reasons,
         summary=None,
         meta={
-            "domain": getattr(normalization_result, 'domain', fetch_result.final_url.split('/')[2] if '//' in fetch_result.final_url else 'unknown'),
+            "domain": normalization_result.get('domain', fetch_result.final_url.split('/')[2] if '//' in fetch_result.final_url else 'unknown'),
             "final_url": fetch_result.final_url,
             "title": None,
             "fetch_time_ms": fetch_result.fetch_time_ms,
