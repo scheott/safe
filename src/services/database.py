@@ -1,4 +1,4 @@
-# Save this as: api/src/services/database.py
+# api/src/services/database.py
 
 import sqlite3
 import json
@@ -199,12 +199,12 @@ class DatabaseService:
             # Query with aggregation for days that don't have pre-computed stats
             cursor.execute("""
                 WITH date_range AS (
-                    SELECT date(?) + (value-1) || ' days' as date
-                    FROM generate_series(0, ?, 1)
+                    SELECT date(?) + (value - 1) * interval '1 day' as date
+                    FROM generate_series(0, ?) as t(value)
                 ),
-                raw_stats AS (
+                daily_data AS (
                     SELECT 
-                        date(created_at) as date,
+                        date(created_at) as check_date,
                         COUNT(*) as total_checks,
                         SUM(CASE WHEN verdict = 'ok' THEN 1 ELSE 0 END) as ok_checks,
                         SUM(CASE WHEN verdict = 'warning' THEN 1 ELSE 0 END) as warning_checks,
@@ -212,21 +212,21 @@ class DatabaseService:
                         AVG(processing_time_ms) as avg_processing_time_ms,
                         COUNT(DISTINCT domain) as unique_domains
                     FROM url_checks 
-                    WHERE date(created_at) BETWEEN ? AND ?
+                    WHERE date(created_at) >= ?
                     GROUP BY date(created_at)
                 )
                 SELECT 
-                    dr.date,
-                    COALESCE(rs.total_checks, 0) as total_checks,
-                    COALESCE(rs.ok_checks, 0) as ok_checks,
-                    COALESCE(rs.warning_checks, 0) as warning_checks,
-                    COALESCE(rs.danger_checks, 0) as danger_checks,
-                    COALESCE(rs.avg_processing_time_ms, 0) as avg_processing_time_ms,
-                    COALESCE(rs.unique_domains, 0) as unique_domains
-                FROM date_range dr
-                LEFT JOIN raw_stats rs ON dr.date = rs.date
-                ORDER BY dr.date DESC
-            """, (start_date, days, start_date, end_date))
+                    ? as date,
+                    COALESCE(dd.total_checks, 0) as total_checks,
+                    COALESCE(dd.ok_checks, 0) as ok_checks,
+                    COALESCE(dd.warning_checks, 0) as warning_checks,
+                    COALESCE(dd.danger_checks, 0) as danger_checks,
+                    COALESCE(dd.avg_processing_time_ms, 0) as avg_processing_time_ms,
+                    COALESCE(dd.unique_domains, 0) as unique_domains
+                FROM daily_data dd
+                WHERE dd.check_date >= ?
+                ORDER BY check_date DESC
+            """, (start_date, days, start_date, start_date))
             
             results = cursor.fetchall()
             cursor.close()
@@ -244,7 +244,25 @@ class DatabaseService:
                     "unique_domains": row[6]
                 })
             
-            return stats
+            # Fill in missing days with zeros
+            existing_dates = {stat["date"] for stat in stats}
+            for i in range(days):
+                check_date = (end_date - timedelta(days=i)).isoformat()
+                if check_date not in existing_dates:
+                    stats.append({
+                        "date": check_date,
+                        "total_checks": 0,
+                        "ok_checks": 0,
+                        "warning_checks": 0,
+                        "danger_checks": 0,
+                        "avg_processing_time_ms": 0,
+                        "unique_domains": 0
+                    })
+            
+            # Sort by date descending
+            stats.sort(key=lambda x: x["date"], reverse=True)
+            
+            return stats[:days]
             
         except Exception as e:
             logger.error(f"Failed to get daily stats: {e}")
@@ -296,29 +314,112 @@ class DatabaseService:
             
             distribution = {"ok": 0, "warning": 0, "danger": 0}
             for verdict, count in results:
-                distribution[verdict] = count
-                
+                if verdict in distribution:
+                    distribution[verdict] = count
+                    
             return distribution
             
         except Exception as e:
             logger.error(f"Failed to get verdict distribution: {e}")
             return {"ok": 0, "warning": 0, "danger": 0}
     
-    def cleanup_old_records(self, days_to_keep: int = 60):
+    def get_domain_stats(self, days: int = 7) -> List[Dict[str, Any]]:
+        """Get domain-level statistics for the last N days"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    domain,
+                    COUNT(*) as total_checks,
+                    SUM(CASE WHEN verdict = 'ok' THEN 1 ELSE 0 END) as ok_checks,
+                    SUM(CASE WHEN verdict = 'warning' THEN 1 ELSE 0 END) as warning_checks,
+                    SUM(CASE WHEN verdict = 'danger' THEN 1 ELSE 0 END) as danger_checks,
+                    AVG(processing_time_ms) as avg_processing_time_ms,
+                    MAX(created_at) as last_check
+                FROM url_checks 
+                WHERE created_at >= datetime('now', '-{} days')
+                GROUP BY domain
+                ORDER BY total_checks DESC
+                LIMIT 50
+            """.format(days))
+            
+            results = cursor.fetchall()
+            cursor.close()
+            
+            return [
+                {
+                    "domain": row[0],
+                    "total_checks": row[1],
+                    "ok_checks": row[2],
+                    "warning_checks": row[3],
+                    "danger_checks": row[4],
+                    "avg_processing_time_ms": round(row[5], 2) if row[5] else 0,
+                    "last_check": row[6]
+                }
+                for row in results
+            ]
+            
+        except Exception as e:
+            logger.error(f"Failed to get domain stats: {e}")
+            return []
+    
+    def get_recent_checks(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get recent URL checks (anonymized)"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    domain,
+                    verdict,
+                    reasons,
+                    tier0_score,
+                    processing_time_ms,
+                    source,
+                    created_at
+                FROM url_checks 
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (limit,))
+            
+            results = cursor.fetchall()
+            cursor.close()
+            
+            return [
+                {
+                    "domain": row[0],
+                    "verdict": row[1],
+                    "reasons": json.loads(row[2]) if row[2] else [],
+                    "tier0_score": row[3],
+                    "processing_time_ms": row[4],
+                    "source": row[5],
+                    "created_at": row[6]
+                }
+                for row in results
+            ]
+            
+        except Exception as e:
+            logger.error(f"Failed to get recent checks: {e}")
+            return []
+    
+    def cleanup_old_records(self, days_to_keep: int = 60) -> int:
         """
         Clean up old URL check records while preserving aggregated stats
         
         Args:
             days_to_keep: Number of days of raw records to keep (default 60)
+            
+        Returns:
+            Number of records deleted
         """
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
             
             cutoff_date = datetime.now() - timedelta(days=days_to_keep)
-            
-            # First, ensure daily stats are up to date for records we're about to delete
-            # (This would be part of a more complete implementation)
             
             # Delete old records
             cursor.execute("""
@@ -336,6 +437,50 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Failed to cleanup old records: {e}")
             return 0
+    
+    def get_database_info(self) -> Dict[str, Any]:
+        """Get database information and statistics"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            # Get basic stats
+            cursor.execute("SELECT COUNT(*) FROM url_checks")
+            total_checks = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(DISTINCT domain) FROM url_checks")
+            unique_domains = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT MIN(created_at), MAX(created_at) FROM url_checks")
+            date_range = cursor.fetchone()
+            
+            cursor.execute("SELECT verdict, COUNT(*) FROM url_checks GROUP BY verdict")
+            verdict_counts = dict(cursor.fetchall())
+            
+            cursor.close()
+            
+            return {
+                "total_checks": total_checks,
+                "unique_domains": unique_domains,
+                "date_range": {
+                    "earliest": date_range[0],
+                    "latest": date_range[1]
+                },
+                "verdict_distribution": verdict_counts,
+                "database_path": str(self.db_path),
+                "database_size_mb": round(self.db_path.stat().st_size / (1024 * 1024), 2) if self.db_path.exists() else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get database info: {e}")
+            return {
+                "total_checks": 0,
+                "unique_domains": 0,
+                "date_range": {"earliest": None, "latest": None},
+                "verdict_distribution": {},
+                "database_path": str(self.db_path),
+                "error": str(e)
+            }
 
 
 # Global database service instance

@@ -10,7 +10,7 @@ from ..services.url_normalizer import URLNormalizer
 from ..services.waf_detector import WAFDetector
 from ..services.reputation_service import ReputationService
 from ..services.tier0_analyzer import Tier0Analyzer
-from ..services.database import log_url_check, get_daily_stats, db_service
+from ..services.database import get_db_service
 
 logger = logging.getLogger(__name__)
 
@@ -27,180 +27,195 @@ class CheckResponse(BaseModel):
     meta: Dict[str, Any]
     processing_time_ms: int
 
-# Initialize services (singleton pattern) - Keep for backward compatibility
+# Initialize services (singleton pattern)
 url_fetcher = URLFetcher()
 url_normalizer = URLNormalizer()
 waf_detector = WAFDetector()
 
-# Note: reputation_service and tier0_analyzer now come from app.state
-
 @router.post("/check", response_model=CheckResponse)
 async def check_url(request: CheckRequest, req: Request):
     """
-    Main URL checking endpoint - Phase 2.3 with Tier-0 scoring.
+    Main URL checking endpoint - Phase 2.4 with Tier-0 scoring + persistent logging.
+    
+    Flow:
+    1. Normalize URL and strip tracking params
+    2. Fetch first 100-200KB of content with staged timeouts  
+    3. Run Tier-0 heuristic analysis (domain reputation + content analysis)
+    4. Log every check to SQLite database (Step 1 requirement)
+    5. Return verdict with reasons and metadata
     """
     start_time = time.time()
     
+    # Get services from app state (or fallback to singletons)
     try:
-        # Get services from app state
         reputation_service = req.app.state.reputation_service
         tier0_analyzer = req.app.state.tier0_analyzer
-        
-        # Convert pydantic HttpUrl to string
-        url_str = str(request.url)
-        
-        logger.info(f"Processing check request for URL: {url_str}")
-        
-        # Hot-reload reputation data if needed (for live updates)
-        reputation_service.hot_reload_if_needed()
-        
+    except AttributeError:
+        # Fallback to singleton pattern for backward compatibility
+        reputation_service = ReputationService()
+        tier0_analyzer = Tier0Analyzer(reputation_service)
+    
+    db_service = get_db_service()
+    url_str = str(request.url)
+    
+    try:
         # Step 1: Normalize URL
-        normalization_result = url_normalizer.normalize_url(url_str)
-        normalized_url = normalization_result['normalized_url']
+        logger.info(f"Starting check for URL: {url_str}")
+        normalization_result = url_normalizer.normalize(url_str)
         
-        logger.info(f"Normalized URL: {normalized_url}")
-        logger.info(f"Removed {normalization_result['removed_params_count']} tracking parameters")
+        # Step 2: Fetch page content
+        fetch_start = time.time()
+        fetch_result = await url_fetcher.fetch_url(normalization_result.normalized_url)
+        fetch_time_ms = int((time.time() - fetch_start) * 1000)
         
-        # Step 2: Fetch URL content
-        try:
-            fetch_result = await url_fetcher.fetch_url(normalized_url)
-            logger.info(f"Fetch completed in {fetch_result.fetch_time_ms}ms, success: {fetch_result.success}")
-        except Exception as e:
-            logger.error(f"Fetch error for {normalized_url}: {type(e).__name__}: {e}")
-            processing_time = int((time.time() - start_time) * 1000)
-            
-            # Log failed fetch
-            log_url_check(
-                url=normalized_url,
-                domain=normalization_result['domain'],
-                verdict="warning",
-                reasons=["fetch_failed", f"fetch_error_{type(e).__name__}"],
-                tier0_score=2,
-                analysis_details={"error": str(e), "error_type": type(e).__name__},
-                processing_time_ms=processing_time,
-                fetch_time_ms=0
+        # Handle different fetch outcomes
+        if fetch_result.success:
+            # Step 3a: Successful fetch - full analysis
+            return await _handle_successful_fetch(
+                fetch_result, normalization_result, start_time, 
+                tier0_analyzer, db_service, url_str
             )
-            
-            return CheckResponse(
-                verdict="warning",
-                reasons=["fetch_failed", f"fetch_error_{type(e).__name__}"],
-                summary=None,
-                meta={
-                    "domain": normalization_result['domain'],
-                    "final_url": normalized_url,
-                    "title": None,
-                    "fetch_time_ms": 0,
-                    "redirect_count": 0,
-                    "error_reason": f"fetch_error_{type(e).__name__}",
-                    "analysis_mode": "domain_only",
-                    "error_details": str(e)
-                },
-                processing_time_ms=processing_time
-            )
-        
-        # Step 3: Analyze fetch result and determine response
-        if not fetch_result.success:
-            # Handle fetch failures
-            return await _handle_fetch_failure(
-                fetch_result, 
-                normalization_result, 
-                start_time
-            )
-        
-        # Step 4: Check for WAF/blocking
-        is_blocked = waf_detector.is_blocked_response(fetch_result)
-        if is_blocked:
-            logger.info(f"Detected WAF/blocking response for {normalized_url}")
+        elif fetch_result.was_blocked:
+            # Step 3b: Site has WAF/protection - limited analysis
             return await _handle_blocked_response(
-                fetch_result,
-                normalization_result,
-                start_time
+                fetch_result, normalization_result, start_time,
+                tier0_analyzer, db_service, url_str
             )
-        
-        # Step 5: Run Tier-0 Analysis
-        analysis_result = tier0_analyzer.analyze(
-            url=normalized_url,
-            fetch_result=fetch_result,
-            content_excerpt=fetch_result.body_excerpt
-        )
-        
-        logger.info(f"Tier-0 analysis: verdict={analysis_result.verdict}, "
-                   f"score={analysis_result.score}, "
-                   f"escalate={analysis_result.escalate_to_tier1}")
-        
-        # Step 6: Log to database
-        processing_time = int((time.time() - start_time) * 1000)
-        
-        log_success = log_url_check(
-            url=normalized_url,
-            domain=normalization_result['domain'],
-            verdict=analysis_result.verdict,
-            reasons=analysis_result.reasons,
-            tier0_score=analysis_result.score,
-            analysis_details=analysis_result.details,
-            processing_time_ms=processing_time,
-            fetch_time_ms=fetch_result.fetch_time_ms
-        )
-        
-        if not log_success:
-            logger.warning("Failed to log URL check to database")
-        
-        # Step 7: Return result
-        return CheckResponse(
-            verdict=analysis_result.verdict,
-            reasons=analysis_result.reasons,
-            summary=None,  # Phase 2.3: No Tier-1 summaries yet
-            meta={
-                "domain": normalization_result['domain'],
-                "final_url": fetch_result.final_url,
-                "title": fetch_result.title,
-                "fetch_time_ms": fetch_result.fetch_time_ms,
-                "redirect_count": fetch_result.redirect_count,
-                "status_code": fetch_result.status_code,
-                "content_type": fetch_result.content_type,
-                "analysis_mode": "tier0_complete",
-                
-                # Tier-0 analysis details
-                "tier0_score": analysis_result.score,
-                "tier0_details": analysis_result.details,
-                "escalate_to_tier1": analysis_result.escalate_to_tier1,
-                
-                # URL normalization info
-                "normalized_url": normalization_result['normalized_url'],
-                "removed_tracking_params": normalization_result['removed_params_count'],
-                "punycode_detected": normalization_result['punycode_info'].get('has_punycode', False),
-                "is_suspicious_tld": normalization_result.get('is_suspicious_tld', False),
-                
-                # Reputation service stats
-                "reputation_stats": reputation_service.get_stats(),
-                
-                # Database logging status
-                "logged_to_db": log_success
-            },
-            processing_time_ms=processing_time
-        )
+        else:
+            # Step 3c: Fetch failed - domain-only analysis
+            return await _handle_fetch_failure(
+                fetch_result, normalization_result, start_time,
+                tier0_analyzer, db_service, url_str
+            )
         
     except Exception as e:
+        processing_time_ms = int((time.time() - start_time) * 1000)
         logger.error(f"Unexpected error processing check request: {e}")
-        processing_time = int((time.time() - start_time) * 1000)
+        
+        # Try to log the error case too (Step 1 requirement)
+        try:
+            db_service.log_url_check(
+                url=url_str,
+                domain=url_str.split('/')[2] if '//' in url_str else 'unknown',
+                verdict="error",
+                reasons=["processing_error"],
+                tier0_score=-1,
+                analysis_details={"error": str(e), "error_type": type(e).__name__},
+                processing_time_ms=processing_time_ms,
+                fetch_time_ms=0,
+                source="extension"
+            )
+        except:
+            pass  # Don't fail on logging errors
         
         raise HTTPException(
             status_code=500,
             detail={
                 "error": "internal_server_error",
                 "message": "An unexpected error occurred while processing the request",
-                "processing_time_ms": processing_time
+                "processing_time_ms": processing_time_ms
             }
         )
+
+async def _handle_successful_fetch(
+    fetch_result: FetchResult,
+    normalization_result: Dict[str, Any], 
+    start_time: float,
+    tier0_analyzer,
+    db_service,
+    original_url: str
+) -> CheckResponse:
+    """Handle successful URL fetch with full content analysis"""
+    
+    # Step 3: Analyze with Tier-0 heuristics
+    analysis_result = tier0_analyzer.analyze(
+        url=fetch_result.final_url,
+        fetch_result=fetch_result,
+        content_excerpt=fetch_result.body_excerpt
+    )
+    
+    # Calculate total processing time
+    processing_time_ms = int((time.time() - start_time) * 1000)
+    
+    # Step 4: Log to database (CRITICAL - Step 1 requirement)
+    log_success = False
+    try:
+        log_success = db_service.log_url_check(
+            url=original_url,
+            domain=fetch_result.domain,
+            verdict=analysis_result.verdict,
+            reasons=analysis_result.reasons,
+            tier0_score=analysis_result.score,
+            analysis_details={
+                "final_url": fetch_result.final_url,
+                "redirect_count": fetch_result.redirect_count,
+                "content_length": fetch_result.content_length,
+                "removed_tracking_params": getattr(normalization_result, 'removed_params_count', 0),
+                "punycode_detected": getattr(normalization_result, 'punycode_detected', False),
+                "tier0_details": analysis_result.details,
+                "escalate_to_tier1": analysis_result.escalate_to_tier1,
+                "analysis_mode": "full_content"
+            },
+            processing_time_ms=processing_time_ms,
+            fetch_time_ms=fetch_result.fetch_time_ms,
+            user_id=None,  # TODO: Extract from auth when implemented
+            source="extension"
+        )
+        
+        if log_success:
+            logger.debug(f"Successfully logged check for {fetch_result.domain}")
+        else:
+            logger.warning(f"Failed to log check for {fetch_result.domain}")
+            
+    except Exception as log_error:
+        # Don't fail the main request if logging fails
+        logger.error(f"Database logging error: {log_error}")
+    
+    # Build response
+    response = CheckResponse(
+        verdict=analysis_result.verdict,
+        reasons=analysis_result.reasons,
+        summary=analysis_result.details.get('summary'),  # Will be None for Tier-0
+        meta={
+            "domain": fetch_result.domain,
+            "title": fetch_result.title,
+            "final_url": fetch_result.final_url,
+            "redirect_count": fetch_result.redirect_count,
+            "content_length": fetch_result.content_length,
+            "fetch_time_ms": fetch_result.fetch_time_ms,
+            "analysis_mode": "full_content",
+            
+            # Tier-0 analysis details
+            "tier0_score": analysis_result.score,
+            "tier0_details": analysis_result.details,
+            "escalate_to_tier1": analysis_result.escalate_to_tier1,
+            
+            # URL normalization info
+            "normalized_url": getattr(normalization_result, 'normalized_url', fetch_result.final_url),
+            "removed_tracking_params": getattr(normalization_result, 'removed_params_count', 0),
+            "punycode_detected": getattr(normalization_result, 'punycode_detected', False),
+            "is_suspicious_tld": getattr(normalization_result, 'is_suspicious_tld', False),
+            
+            # Database logging status (for debugging)
+            "logged_to_db": log_success
+        },
+        processing_time_ms=processing_time_ms
+    )
+    
+    logger.info(f"Check completed for {fetch_result.domain}: {analysis_result.verdict} in {processing_time_ms}ms")
+    return response
 
 async def _handle_fetch_failure(
     fetch_result: FetchResult, 
     normalization_result: Dict[str, Any], 
-    start_time: float
+    start_time: float,
+    tier0_analyzer,
+    db_service,
+    original_url: str
 ) -> CheckResponse:
     """Handle cases where URL fetch failed - use domain-only analysis"""
     
-    processing_time = int((time.time() - start_time) * 1000)
+    processing_time_ms = int((time.time() - start_time) * 1000)
     
     # Run domain-only Tier-0 analysis
     analysis_result = tier0_analyzer.analyze(
@@ -237,24 +252,36 @@ async def _handle_fetch_failure(
                 analysis_result.score = max(analysis_result.score, 2)  # Ensure warning threshold
                 reasons.append("network_error_suspicious")
     
-    # Log to database
-    log_url_check(
-        url=fetch_result.final_url,
-        domain=normalization_result['domain'],
-        verdict=verdict,
-        reasons=reasons,
-        tier0_score=analysis_result.score,
-        analysis_details=analysis_result.details,
-        processing_time_ms=processing_time,
-        fetch_time_ms=fetch_result.fetch_time_ms
-    )
+    # Log to database (Step 1 requirement)
+    log_success = False
+    try:
+        log_success = db_service.log_url_check(
+            url=original_url,
+            domain=getattr(normalization_result, 'domain', fetch_result.final_url.split('/')[2] if '//' in fetch_result.final_url else 'unknown'),
+            verdict=verdict,
+            reasons=reasons,
+            tier0_score=analysis_result.score,
+            analysis_details={
+                "final_url": fetch_result.final_url,
+                "error_reason": fetch_result.error_reason,
+                "fetch_time_ms": fetch_result.fetch_time_ms,
+                "redirect_count": fetch_result.redirect_count,
+                "tier0_details": analysis_result.details,
+                "analysis_mode": "domain_only"
+            },
+            processing_time_ms=processing_time_ms,
+            fetch_time_ms=fetch_result.fetch_time_ms,
+            source="extension"
+        )
+    except Exception as log_error:
+        logger.error(f"Database logging error: {log_error}")
     
     return CheckResponse(
         verdict=verdict,
         reasons=reasons,
         summary=None,
         meta={
-            "domain": normalization_result['domain'],
+            "domain": getattr(normalization_result, 'domain', fetch_result.final_url.split('/')[2] if '//' in fetch_result.final_url else 'unknown'),
             "final_url": fetch_result.final_url,
             "title": None,
             "fetch_time_ms": fetch_result.fetch_time_ms,
@@ -264,19 +291,23 @@ async def _handle_fetch_failure(
             
             # Include domain analysis details
             "tier0_score": analysis_result.score,
-            "tier0_details": analysis_result.details
+            "tier0_details": analysis_result.details,
+            "logged_to_db": log_success
         },
-        processing_time_ms=processing_time
+        processing_time_ms=processing_time_ms
     )
 
 async def _handle_blocked_response(
     fetch_result: FetchResult,
     normalization_result: Dict[str, Any],
-    start_time: float
+    start_time: float,
+    tier0_analyzer,
+    db_service,
+    original_url: str
 ) -> CheckResponse:
     """Handle cases where site is blocking our requests"""
     
-    processing_time = int((time.time() - start_time) * 1000)
+    processing_time_ms = int((time.time() - start_time) * 1000)
     
     # Run analysis with limited content
     analysis_result = tier0_analyzer.analyze(
@@ -308,143 +339,135 @@ async def _handle_blocked_response(
         # Likely legitimate site with protection
         final_verdict = "ok"
     
-    # Log to database
-    log_url_check(
-        url=fetch_result.final_url,
-        domain=normalization_result['domain'],
-        verdict=final_verdict,
-        reasons=reasons,
-        tier0_score=analysis_result.score,
-        analysis_details=analysis_result.details,
-        processing_time_ms=processing_time,
-        fetch_time_ms=fetch_result.fetch_time_ms
-    )
+    # Log to database (Step 1 requirement)
+    log_success = False
+    try:
+        log_success = db_service.log_url_check(
+            url=original_url,
+            domain=fetch_result.domain,
+            verdict=final_verdict,
+            reasons=reasons,
+            tier0_score=analysis_result.score,
+            analysis_details={
+                "final_url": fetch_result.final_url,
+                "was_blocked": fetch_result.was_blocked,
+                "status_code": fetch_result.status_code,
+                "tier0_details": analysis_result.details,
+                "analysis_mode": "limited_waf"
+            },
+            processing_time_ms=processing_time_ms,
+            fetch_time_ms=fetch_result.fetch_time_ms,
+            source="extension"
+        )
+    except Exception as log_error:
+        logger.error(f"Database logging error: {log_error}")
     
     return CheckResponse(
         verdict=final_verdict,
         reasons=reasons,
         summary=None,
         meta={
-            "domain": normalization_result['domain'],
+            "domain": fetch_result.domain,
             "final_url": fetch_result.final_url,
             "title": fetch_result.title,
             "fetch_time_ms": fetch_result.fetch_time_ms,
             "redirect_count": fetch_result.redirect_count,
             "status_code": fetch_result.status_code,
-            "analysis_mode": "blocked_response",
+            "was_blocked": fetch_result.was_blocked,
+            "analysis_mode": "limited_waf",
             
             # Include analysis details
             "tier0_score": analysis_result.score,
             "tier0_details": analysis_result.details,
-            "waf_detected": True
+            "logged_to_db": log_success
         },
-        processing_time_ms=processing_time
+        processing_time_ms=processing_time_ms
     )
 
-# Additional analytics endpoints
+# Analytics endpoints (Step 1 requirement)
 @router.get("/analytics/daily")
-async def get_analytics_daily(days: int = 7):
-    """Get daily analytics for the last N days"""
+async def get_daily_analytics(
+    days: int = 7,
+    req: Request = None
+):
+    """
+    Get daily analytics for the last N days.
+    
+    Returns aggregated statistics including:
+    - Total checks per day
+    - Verdict distribution (ok/warning/danger)  
+    - Average processing time
+    - Unique domains checked
+    
+    This endpoint always returns a 200 response, even with no data.
+    """
     try:
-        from ..services.database import db_service
+        db_service = get_db_service()
         stats = db_service.get_daily_stats(days)
+        
         return {
             "status": "success",
             "days_requested": days,
             "total_days": len(stats),
             "stats": stats
         }
+        
     except Exception as e:
         logger.error(f"Error getting daily analytics: {e}")
-        # Return empty but successful response instead of 500 for MVP
-        return {
-            "status": "success",
-            "days_requested": days,
-            "total_days": 0,
-            "stats": [],
-            "note": "Analytics data not yet available"
-        }
-
-@router.get("/analytics/domains")
-async def get_domain_analytics(days: int = 7):
-    """Get domain-level analytics"""
-    try:
-        domain_stats = db_service.get_domain_stats(days)
+        # Still return 200 with empty data as per Step 1 requirement
         return {
             "status": "success", 
             "days_requested": days,
-            "total_domains": len(domain_stats),
-            "domains": domain_stats
+            "total_days": 0,
+            "stats": [],
+            "note": "Analytics data temporarily unavailable"
         }
-    except Exception as e:
-        logger.error(f"Error getting domain analytics: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/analytics/recent")
-async def get_recent_checks(limit: int = 50):
-    """Get recent URL checks (anonymized)"""
+@router.get("/analytics/summary")
+async def get_analytics_summary():
+    """Get overall analytics summary"""
     try:
-        recent_checks = db_service.get_recent_checks(limit)
+        db_service = get_db_service()
+        
+        total_checks = db_service.get_total_checks()
+        verdict_distribution = db_service.get_verdict_distribution(30)  # Last 30 days
+        
         return {
             "status": "success",
-            "limit": limit,
-            "total_returned": len(recent_checks),
-            "checks": recent_checks
+            "total_checks": total_checks,
+            "verdict_distribution": verdict_distribution,
+            "timestamp": time.time()
         }
+        
     except Exception as e:
-        logger.error(f"Error getting recent checks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Additional endpoint for reputation service stats
-@router.get("/reputation/stats")
-async def get_reputation_stats(req: Request):
-    """Get statistics about loaded reputation data"""
-    reputation_service = req.app.state.reputation_service
-    return {
-        "status": "healthy",
-        "reputation_service": reputation_service.get_stats(),
-        "data_files": [
-            "reputable_domains.json",
-            "brand_domains.json", 
-            "suspicious_indicators.json",
-            "heuristic_weights.json"
-        ]
-    }
-
-# Endpoint to trigger reputation data reload
-@router.post("/reputation/reload")
-async def reload_reputation_data(req: Request):
-    """Manually trigger a reload of reputation data"""
-    try:
-        reputation_service = req.app.state.reputation_service
-        success = reputation_service.load_all_data()
-        if success:
-            return {
-                "status": "success",
-                "message": "Reputation data reloaded successfully",
-                "stats": reputation_service.get_stats()
-            }
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to reload reputation data"
-            )
-    except Exception as e:
-        logger.error(f"Error reloading reputation data: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error reloading reputation data: {str(e)}"
-        )
+        logger.error(f"Error getting analytics summary: {e}")
+        # Return empty data on error
+        return {
+            "status": "success",
+            "total_checks": 0,
+            "verdict_distribution": {"ok": 0, "warning": 0, "danger": 0},
+            "timestamp": time.time(),
+            "note": "Analytics data temporarily unavailable"
+        }
 
 # Database management endpoints
 @router.get("/database/info")
 async def get_database_info():
     """Get database information and statistics"""
     try:
-        info = db_service.get_database_info()
+        db_service = get_db_service()
+        
+        total_checks = db_service.get_total_checks()
+        verdict_distribution = db_service.get_verdict_distribution(7)
+        
         return {
             "status": "success",
-            "database": info
+            "database": {
+                "total_checks": total_checks,
+                "recent_verdict_distribution": verdict_distribution,
+                "database_path": str(db_service.db_path),
+                "initialized": True
+            }
         }
     except Exception as e:
         logger.error(f"Error getting database info: {e}")
@@ -454,6 +477,7 @@ async def get_database_info():
 async def cleanup_database(days: int = 30):
     """Clean up old database records"""
     try:
+        db_service = get_db_service()
         deleted_count = db_service.cleanup_old_records(days)
         return {
             "status": "success",
@@ -463,307 +487,36 @@ async def cleanup_database(days: int = 30):
         }
     except Exception as e:
         logger.error(f"Error cleaning up database: {e}")
-        raise HTTPException(status_code=500, detail=str(e))# api/src/routes/check.py
-from fastapi import APIRouter, HTTPException, Depends, Request
-from pydantic import BaseModel, HttpUrl
-import logging
-import time
-from typing import Optional, List, Dict, Any
+        raise HTTPException(status_code=500, detail=str(e))
 
-from ..services.url_fetcher import URLFetcher, FetchResult
-from ..services.url_normalizer import URLNormalizer
-from ..services.waf_detector import WAFDetector
-from ..services.reputation_service import ReputationService
-from ..services.tier0_analyzer import Tier0Analyzer
-
-logger = logging.getLogger(__name__)
-
-router = APIRouter()
-
-# Request/Response models
-class CheckRequest(BaseModel):
-    url: HttpUrl
-
-class CheckResponse(BaseModel):
-    verdict: str  # "ok" | "warning" | "danger"
-    reasons: List[str]
-    summary: Optional[str] = None
-    meta: Dict[str, Any]
-    processing_time_ms: int
-
-# Initialize services (singleton pattern)
-url_fetcher = URLFetcher()
-url_normalizer = URLNormalizer()
-waf_detector = WAFDetector()
-
-# Initialize reputation service and analyzer
-reputation_service = ReputationService()
-tier0_analyzer = Tier0Analyzer(reputation_service)
-
-@router.post("/check", response_model=CheckResponse)
-async def check_url(request: CheckRequest, req: Request):
-    """
-    Main URL checking endpoint - Phase 2.3 with Tier-0 scoring.
-    
-    Flow:
-    1. Normalize URL and strip tracking params
-    2. Fetch first 100-200KB of content with staged timeouts  
-    3. Run Tier-0 heuristic analysis (domain reputation + content analysis)
-    4. Return verdict with explainable reasons
-    """
-    start_time = time.time()
-    
-    try:
-        # Convert pydantic HttpUrl to string
-        url_str = str(request.url)
-        
-        logger.info(f"Processing check request for URL: {url_str}")
-        
-        # Hot-reload reputation data if needed (for live updates)
-        reputation_service.hot_reload_if_needed()
-        
-        # Step 1: Normalize URL
-        normalization_result = url_normalizer.normalize_url(url_str)
-        normalized_url = normalization_result['normalized_url']
-        
-        logger.info(f"Normalized URL: {normalized_url}")
-        logger.info(f"Removed {normalization_result['removed_params_count']} tracking parameters")
-        
-        # Step 2: Fetch URL content
-        try:
-            fetch_result = await url_fetcher.fetch_url(normalized_url)
-            logger.info(f"Fetch completed in {fetch_result.fetch_time_ms}ms, success: {fetch_result.success}")
-        except Exception as e:
-            logger.error(f"Fetch error for {normalized_url}: {type(e).__name__}: {e}")
-            processing_time = int((time.time() - start_time) * 1000)
-            return CheckResponse(
-                verdict="warning",
-                reasons=["fetch_failed", f"fetch_error_{type(e).__name__}"],
-                summary=None,
-                meta={
-                    "domain": normalization_result['domain'],
-                    "final_url": normalized_url,
-                    "title": None,
-                    "fetch_time_ms": 0,
-                    "redirect_count": 0,
-                    "error_reason": f"fetch_error_{type(e).__name__}",
-                    "analysis_mode": "domain_only",
-                    "error_details": str(e)
-                },
-                processing_time_ms=processing_time
-            )
-        
-        # Step 3: Analyze fetch result and determine response
-        if not fetch_result.success:
-            # Handle fetch failures
-            return await _handle_fetch_failure(
-                fetch_result, 
-                normalization_result, 
-                start_time
-            )
-        
-        # Step 4: Check for WAF/blocking
-        is_blocked = waf_detector.is_blocked_response(fetch_result)
-        if is_blocked:
-            logger.info(f"Detected WAF/blocking response for {normalized_url}")
-            return await _handle_blocked_response(
-                fetch_result,
-                normalization_result,
-                start_time
-            )
-        
-        # Step 5: Run Tier-0 Analysis
-        analysis_result = tier0_analyzer.analyze(
-            url=normalized_url,
-            fetch_result=fetch_result,
-            content_excerpt=fetch_result.body_excerpt
-        )
-        
-        logger.info(f"Tier-0 analysis: verdict={analysis_result.verdict}, "
-                   f"score={analysis_result.score}, "
-                   f"escalate={analysis_result.escalate_to_tier1}")
-        
-        # Step 6: Return result
-        processing_time = int((time.time() - start_time) * 1000)
-        
-        return CheckResponse(
-            verdict=analysis_result.verdict,
-            reasons=analysis_result.reasons,
-            summary=None,  # Phase 2.3: No Tier-1 summaries yet
-            meta={
-                "domain": normalization_result['domain'],
-                "final_url": fetch_result.final_url,
-                "title": fetch_result.title,
-                "fetch_time_ms": fetch_result.fetch_time_ms,
-                "redirect_count": fetch_result.redirect_count,
-                "status_code": fetch_result.status_code,
-                "content_type": fetch_result.content_type,
-                "analysis_mode": "tier0_complete",
-                
-                # Tier-0 analysis details
-                "tier0_score": analysis_result.score,
-                "tier0_details": analysis_result.details,
-                "escalate_to_tier1": analysis_result.escalate_to_tier1,
-                
-                # URL normalization info
-                "normalized_url": normalization_result['normalized_url'],
-                "removed_tracking_params": normalization_result['removed_params_count'],
-                "punycode_detected": normalization_result['punycode_info'].get('has_punycode', False),
-                "is_suspicious_tld": normalization_result.get('is_suspicious_tld', False),
-                
-                # Reputation service stats
-                "reputation_stats": reputation_service.get_stats()
-            },
-            processing_time_ms=processing_time
-        )
-        
-    except Exception as e:
-        logger.error(f"Unexpected error processing check request: {e}")
-        processing_time = int((time.time() - start_time) * 1000)
-        
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "internal_server_error",
-                "message": "An unexpected error occurred while processing the request",
-                "processing_time_ms": processing_time
-            }
-        )
-
-async def _handle_fetch_failure(
-    fetch_result: FetchResult, 
-    normalization_result: Dict[str, Any], 
-    start_time: float
-) -> CheckResponse:
-    """Handle cases where URL fetch failed - use domain-only analysis"""
-    
-    processing_time = int((time.time() - start_time) * 1000)
-    
-    # Run domain-only Tier-0 analysis
-    analysis_result = tier0_analyzer.analyze(
-        url=fetch_result.final_url,
-        fetch_result=fetch_result,
-        content_excerpt=None  # No content available
-    )
-    
-    # Combine fetch failure reasons with analysis reasons
-    reasons = analysis_result.reasons.copy()
-    reasons.append("fetch_failed")
-    
-    # Add specific failure reasons
-    if fetch_result.error_reason:
-        reasons.append(fetch_result.error_reason)
-    
-    # Special cases for verdict adjustment
-    if "timeout" in fetch_result.error_reason:
-        reasons.append("site_slow_response")
-    elif "blocked_by_site" in fetch_result.error_reason:
-        reasons.append("access_restricted")
-    elif "invalid_url" in fetch_result.error_reason:
-        # Override verdict for invalid URLs
-        analysis_result.verdict = "danger"
-        reasons = ["invalid_url", "malformed_address"]
-    
-    return CheckResponse(
-        verdict=analysis_result.verdict,
-        reasons=reasons,
-        summary=None,
-        meta={
-            "domain": normalization_result['domain'],
-            "final_url": fetch_result.final_url,
-            "title": None,
-            "fetch_time_ms": fetch_result.fetch_time_ms,
-            "redirect_count": fetch_result.redirect_count,
-            "error_reason": fetch_result.error_reason,
-            "analysis_mode": "domain_only",
-            
-            # Include domain analysis details
-            "tier0_score": analysis_result.score,
-            "tier0_details": analysis_result.details
-        },
-        processing_time_ms=processing_time
-    )
-
-async def _handle_blocked_response(
-    fetch_result: FetchResult,
-    normalization_result: Dict[str, Any],
-    start_time: float
-) -> CheckResponse:
-    """Handle cases where site is blocking our requests"""
-    
-    processing_time = int((time.time() - start_time) * 1000)
-    
-    # Run analysis with limited content
-    analysis_result = tier0_analyzer.analyze(
-        url=fetch_result.final_url,
-        fetch_result=fetch_result,
-        content_excerpt=fetch_result.body_excerpt  # May contain WAF page
-    )
-    
-    # WAF/blocking usually indicates a legitimate site with protection
-    # But still run our analysis to check for domain issues
-    reasons = analysis_result.reasons.copy()
-    reasons.extend(["site_has_protection", "limited_analysis"])
-    
-    # Add specific blocking indicators
-    if fetch_result.was_blocked:
-        reasons.append("access_restricted")
-    
-    if fetch_result.status_code == 429:
-        reasons.append("rate_limited")
-    
-    # For legitimate sites with WAF, lean toward "ok" unless domain analysis suggests otherwise
-    if analysis_result.verdict == "danger":
-        # Keep danger verdict if domain analysis found serious issues
-        final_verdict = "danger"
-    elif analysis_result.score >= 2:
-        # Some suspicious signals but has WAF protection
-        final_verdict = "warning"
-    else:
-        # Likely legitimate site with protection
-        final_verdict = "ok"
-    
-    return CheckResponse(
-        verdict=final_verdict,
-        reasons=reasons,
-        summary=None,
-        meta={
-            "domain": normalization_result['domain'],
-            "final_url": fetch_result.final_url,
-            "title": fetch_result.title,
-            "fetch_time_ms": fetch_result.fetch_time_ms,
-            "redirect_count": fetch_result.redirect_count,
-            "status_code": fetch_result.status_code,
-            "analysis_mode": "blocked_response",
-            
-            # Include analysis details
-            "tier0_score": analysis_result.score,
-            "tier0_details": analysis_result.details,
-            "waf_detected": True
-        },
-        processing_time_ms=processing_time
-    )
-
-# Additional endpoint for reputation service stats
+# Reputation service endpoints (preserving existing functionality)
 @router.get("/reputation/stats")
-async def get_reputation_stats():
+async def get_reputation_stats(req: Request):
     """Get statistics about loaded reputation data"""
-    return {
-        "status": "healthy",
-        "reputation_service": reputation_service.get_stats(),
-        "data_files": [
-            "reputable_domains.json",
-            "brand_domains.json", 
-            "suspicious_indicators.json",
-            "heuristic_weights.json"
-        ]
-    }
+    try:
+        reputation_service = req.app.state.reputation_service
+        return {
+            "status": "healthy",
+            "reputation_service": reputation_service.get_stats(),
+            "data_files": [
+                "reputable_domains.json",
+                "brand_domains.json", 
+                "suspicious_indicators.json",
+                "heuristic_weights.json"
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error getting reputation stats: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 
-# Endpoint to trigger reputation data reload
 @router.post("/reputation/reload")
-async def reload_reputation_data():
+async def reload_reputation_data(req: Request):
     """Manually trigger a reload of reputation data"""
     try:
+        reputation_service = req.app.state.reputation_service
         success = reputation_service.load_all_data()
         if success:
             return {
