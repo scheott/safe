@@ -104,7 +104,7 @@ class ReputationService:
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
             self.reputable_domains = data.get('domains', {})
-            
+        
         logger.info(f"Loaded {len(self.reputable_domains)} reputable domains")
     
     def _load_brand_domains(self):
@@ -149,51 +149,49 @@ class ReputationService:
         with open(file_path, 'r', encoding='utf-8') as f:
             self.heuristic_weights = json.load(f)
             
-        logger.info("Loaded heuristic weights and thresholds")
+        logger.info("Loaded heuristic weights and patterns")
     
     def _build_lookup_caches(self):
-        """Build fast lookup caches from loaded data"""
-        # Build domain score cache
+        """Build optimized lookup caches from loaded data"""
+        # Build domain scores lookup
         self.domain_scores = {}
-        for domain, info in self.reputable_domains.items():
-            self.domain_scores[domain] = info.get('score', 0)
         
-        # Build brand domains set (all brands flattened)
+        for domain, info in self.reputable_domains.items():
+            score = info.get('score', 0)
+            self.domain_scores[domain.lower()] = score
+        
+        # Build brand domains set
         self.brand_domains = set()
         for category, domains in self.brand_categories.items():
-            self.brand_domains.update(domains)
+            for domain in domains:
+                self.brand_domains.add(domain.lower())
         
-        # ENHANCED: Add all major test brands to ensure detection works
-        essential_test_brands = [
-            'google.com', 'paypal.com', 'microsoft.com', 'chase.com', 
-            'apple.com', 'amazon.com', 'facebook.com', 'netflix.com',
-            'visa.com', 'mastercard.com', 'capitalone.com'
-        ]
-        for brand in essential_test_brands:
-            self.brand_domains.add(brand)
-        
-        # Build suspicious TLD set
+        # Build suspicious TLDs set
         self.suspicious_tlds = set()
-        tld_data = self.suspicious_indicators.get('suspicious_tlds', {})
-        for risk_level, tlds in tld_data.items():
-            self.suspicious_tlds.update(tlds)
+        suspicious_data = self.suspicious_indicators.get('suspicious_tlds', {})
         
-        logger.debug(f"Built caches: {len(self.brand_domains)} brand domains, {len(self.suspicious_tlds)} suspicious TLDs")
+        for risk_level in ['high_risk', 'medium_risk']:
+            if risk_level in suspicious_data:
+                for tld in suspicious_data[risk_level]:
+                    # Remove leading dot if present
+                    clean_tld = tld.lstrip('.')
+                    self.suspicious_tlds.add(clean_tld.lower())
     
+    # DOMAIN REPUTATION METHODS (existing functionality)
     def get_domain_score(self, domain: str) -> int:
         """
         Get reputation score for a domain.
-        Returns: -2 (very reputable) to +3 (very suspicious)
+        Returns: -2 (highly reputable) to +3 (highly suspicious)
         """
         if not domain:
             return 0
         
-        # Normalize domain (lowercase, remove www)
+        # Normalize domain
         normalized_domain = domain.lower()
         if normalized_domain.startswith('www.'):
             normalized_domain = normalized_domain[4:]
         
-        # Check exact match first
+        # Direct lookup
         if normalized_domain in self.domain_scores:
             return self.domain_scores[normalized_domain]
         
@@ -223,10 +221,11 @@ class ReputationService:
         
         return normalized_domain in self.brand_domains
 
-    # PRODUCTION-READY BRAND SIMILARITY DETECTION
+    # PRODUCTION-READY BRAND SIMILARITY DETECTION (FIXED VERSION)
     def find_similar_brands(self, domain: str, max_distance: int = 2) -> List[Dict[str, Any]]:
         """
-        Production-ready brand similarity detection with tightened requirements.
+        Production-ready brand similarity detection with comprehensive fixes.
+        Addresses homoglyph normalization, prefilters, and check ordering.
         """
         if not domain:
             return []
@@ -237,16 +236,16 @@ class ReputationService:
             return []
         
         # Parse components
-        registrable_label = etld1.split('.')[0]  # Left part of eTLD+1
+        label_raw = etld1.split('.')[0]  # Left part of eTLD+1
         tld = '.'.join(etld1.split('.')[1:])     # Everything after first dot
         
-        # Normalize and tokenize
-        norm = self._normalize_label_robust(registrable_label)
-        slim = norm.replace('-', '')  # For edit distance
+        # FIX 1: Normalize the DOMAIN LABEL first (this was the main issue!)
+        norm = self._normalize_label_robust(label_raw)  # Apply confusables to domain
+        slim = norm.replace('-', '')  # For edit distance (hyphenless)
         tokens = set(re.findall(r'[a-z0-9]+', norm))  # Tokenize on alphanumeric
         
         # Check TLD suspiciousness
-        suspicious_tld = self._is_suspicious_tld(tld.split('.')[-1])  # Check final TLD part
+        suspicious_tld = self._is_suspicious_tld(tld.split('.')[-1])
         
         # Extract path for additional context
         path_flags = self._extract_path_flags(domain)
@@ -261,26 +260,27 @@ class ReputationService:
             if etld1 in brand_meta.get('official_domains', set()):
                 continue
             
-            normalized_brand = self._normalize_label_robust(brand_name)
+            brand_norm = self._normalize_label_robust(brand_name)  # Normalize brand too
             
-            # BRANCH 1: Exact match different TLD (narrow scope)
-            if registrable_label.lower() == normalized_brand:
+            # FIX 5: Reorder - EXACT MATCH FIRST (before lookalike)
+            # BRANCH 1: Exact match different TLD
+            if norm == brand_norm:  # Compare normalized domain vs normalized brand
                 match_type = 'exact_match_different_tld'
                 confidence = 0.95 + (0.03 if suspicious_tld else 0)
                 
                 # For dictionary words, require extra signals
-                if self._is_dictionary_word_brand(normalized_brand):
+                if self._is_dictionary_word_brand(brand_norm):
                     if not (suspicious_tld or self._has_impersonation_signals(tokens, path_flags)):
-                        continue  # Skip dictionary words without extra signals
+                        continue
                 
                 hits.append(self._create_match_result(
                     brand_domain, match_type, 0, confidence, etld1, tld,
-                    {'registrable_label': registrable_label, 'path_flags': path_flags}
+                    {'normalized_domain': norm, 'normalized_brand': brand_norm, 'path_flags': path_flags}
                 ))
                 continue
             
-            # BRANCH 2: Brand + keywords  
-            if self._contains_brand_with_keywords(tokens, normalized_brand):
+            # BRANCH 2: Brand + keywords (check before lookalike)
+            if self._contains_brand_with_keywords(tokens, brand_norm):
                 match_type = 'brand_with_keywords'
                 confidence = 0.9 + (0.05 if suspicious_tld else 0)
                 
@@ -294,33 +294,53 @@ class ReputationService:
                 ))
                 continue
             
-            # BRANCH 3: Lookalike (edit distance)
-            distance = self._levenshtein_distance(slim, normalized_brand)
-            threshold = self._get_distance_threshold(normalized_brand, suspicious_tld)
+            # BRANCH 3: Lookalike (edit distance) with enhanced prefilters
             
-            # Fast prefilter: length difference check
-            if abs(len(slim) - len(normalized_brand)) > threshold + 2:
+            # FIX 2a: Letters-only length check (avoid numeric domains like 123456.tk)
+            letters_in_slim = [c for c in slim if c.isalpha()]
+            if len(letters_in_slim) < 3:
+                continue
+            
+            # FIX 2b: Character overlap prefilter
+            char_overlap = len(set(slim) & set(brand_norm))
+            min_overlap = max(3, int(0.4 * len(brand_norm)))
+            if char_overlap < min_overlap:
+                continue
+            
+            # FIX 4: First/last letter match for lookalikes
+            if len(slim) >= 3 and len(brand_norm) >= 3:
+                if slim[0] != brand_norm[0] or slim[-1] != brand_norm[-1]:
+                    continue
+            
+            # Calculate edit distance
+            distance = self._levenshtein_distance(slim, brand_norm)
+            threshold = self._get_distance_threshold(brand_norm, suspicious_tld)
+            
+            # Enhanced length difference guard
+            if abs(len(slim) - len(brand_norm)) > threshold + 2:
                 continue
             
             if 0 < distance <= threshold:
                 match_type = 'lookalike'
                 base_confidence = 0.75 + 0.05 * (threshold - distance)
                 
-                # Boost confidence for dangerous paths
+                # FIX 3: Path-based boost for auth paths
                 if path_flags.get('has_auth_path'):
                     base_confidence += 0.1
                 
                 # For dictionary words, require extra signals
-                if self._is_dictionary_word_brand(normalized_brand):
+                if self._is_dictionary_word_brand(brand_norm):
                     if not (suspicious_tld or self._has_impersonation_signals(tokens, path_flags)):
                         continue
                 
                 hits.append(self._create_match_result(
                     brand_domain, match_type, distance, base_confidence, etld1, tld,
                     {
-                        'similarity_type': self._classify_similarity_type(slim, normalized_brand),
+                        'similarity_type': self._classify_similarity_type(slim, brand_norm),
                         'path_flags': path_flags,
-                        'slim_comparison': f"{slim} vs {normalized_brand}"
+                        'char_overlap': char_overlap,
+                        'slim_comparison': f"{slim} vs {brand_norm}",
+                        'letters_count': len(letters_in_slim)
                     }
                 ))
         
@@ -328,6 +348,88 @@ class ReputationService:
         hits.sort(key=lambda r: (r['distance'], -r['confidence']))
         return hits[:3]
 
+    def get_brand_similarity_score(self, domain: str) -> Dict[str, Any]:
+        """
+        Enhanced brand similarity scoring with path-based escalation.
+        Returns score, reasons, and details for Tier-0 integration.
+        """
+        similar_brands = self.find_similar_brands(domain)
+        
+        if not similar_brands:
+            return {
+                'score': 0,
+                'reasons': [],
+                'details': {}
+            }
+        
+        # Take the highest-confidence match
+        best_match = similar_brands[0]
+        match_type = best_match['type']
+        brand_domain = best_match['brand_domain']
+        confidence = best_match['confidence']
+        tld = best_match['tld']
+        path_flags = best_match['metadata'].get('path_flags', {})
+        
+        # Base scoring by match type
+        if match_type == 'exact_match_different_tld':
+            if self._is_suspicious_tld(tld.split('.')[-1]):
+                base_score = 4  # DANGER
+                reasons = ['brand_impersonation_high_risk', 'suspicious_domain']
+            else:
+                base_score = 2  # WARNING  
+                reasons = ['brand_impersonation', 'different_tld']
+                
+        elif match_type == 'brand_with_keywords':
+            keywords = best_match['metadata'].get('keywords_found', [])
+            if self._is_suspicious_tld(tld.split('.')[-1]):
+                base_score = 4  # DANGER
+                reasons = ['brand_impersonation_high_risk', 'impersonation_keywords', 'suspicious_domain']
+            else:
+                base_score = 2  # WARNING
+                reasons = ['brand_impersonation', 'impersonation_keywords']
+                
+        elif match_type == 'lookalike':
+            similarity_type = best_match['metadata'].get('similarity_type', 'unknown')
+            
+            # Base score for lookalikes
+            if self._is_suspicious_tld(tld.split('.')[-1]):
+                base_score = 3  # WARNING+ (will escalate to DANGER with path)
+                reasons = ['brand_similarity', 'suspicious_domain', 'lookalike_domain']
+            else:
+                base_score = 2  # WARNING
+                reasons = ['brand_similarity', 'lookalike_domain']
+            
+            # Add similarity-specific reason
+            if similarity_type == 'confusable_substitution':
+                reasons.append('homoglyph_substitution')
+        else:
+            base_score = 1
+            reasons = ['brand_similarity']
+        
+        # FIX 3: Path-based escalation for auth paths
+        if path_flags.get('has_auth_path') and match_type == 'lookalike':
+            base_score += 2
+            reasons.append('auth_path')
+            logger.info(f"Path escalation: {domain} boosted by auth path")
+        
+        # Cap at 4 (DANGER level)
+        final_score = min(base_score, 4)
+        
+        return {
+            'score': final_score,
+            'reasons': reasons,
+            'details': {
+                'brand': brand_domain.split('.')[0],
+                'type': match_type,
+                'confidence': confidence,
+                'tld': tld,
+                'similarity_type': best_match['metadata'].get('similarity_type'),
+                'path_flags': path_flags,
+                'all_matches': len(similar_brands)
+            }
+        }
+
+    # SUPPORTING METHODS FOR BRAND SIMILARITY (FIXED VERSIONS)
     def _extract_etld1_robust(self, domain: str) -> str:
         """Robust eTLD+1 extraction with multi-part TLD support."""
         if not domain:
@@ -362,7 +464,10 @@ class ReputationService:
         return '.'.join(parts[-2:])
 
     def _normalize_label_robust(self, label: str) -> str:
-        """Robust label normalization with comprehensive confusable mapping."""
+        """
+        FIXED: Comprehensive label normalization with enhanced confusable mapping.
+        This was the key missing piece!
+        """
         if not label:
             return ""
         
@@ -371,24 +476,30 @@ class ReputationService:
         s = unicodedata.normalize('NFKD', s)
         s = ''.join(c for c in s if not unicodedata.combining(c))
         
-        # ENHANCED confusable mapping (fixed the I/l issue)
+        # COMPREHENSIVE confusable mapping (fixes the homoglyph detection)
         confusable_map = {
+            # Basic homoglyphs
             '0': 'o', '1': 'l', '3': 'e', '5': 's', '6': 'g', '8': 'b',
-            '@': 'a', '$': 's', '¡': 'i', '!': 'i',
-            # FIX: Capital I should map to lowercase l
-            'I': 'l',  # This was missing!
-            'i': 'i',  # Keep lowercase i as i
+            '@': 'a', '$': 's', '!': 'i',
+            
+            # FIX: Critical missing mappings
+            'I': 'l',  # This was causing paypaI.com to fail!
+            
             # Extended Unicode confusables
             'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c', 'х': 'x',  # Cyrillic
             'α': 'a', 'β': 'b', 'ε': 'e', 'ο': 'o', 'ρ': 'p',           # Greek
             '⁰': 'o', '¹': 'l', '²': '2', '³': '3',                      # Superscripts
+            
+            # Additional common confusables
+            'і': 'i', 'ї': 'i', 'є': 'e',  # Ukrainian
+            'ǝ': 'e', 'ɑ': 'a', 'ο': 'o',  # IPA/Greek
         }
         
+        # Apply all mappings
         for original, replacement in confusable_map.items():
             s = s.replace(original, replacement)
         
         return s
-
 
     def _is_suspicious_tld(self, tld: str) -> bool:
         """Enhanced suspicious TLD detection."""
@@ -408,194 +519,61 @@ class ReputationService:
         return bool(tokens & self.impersonation_keywords) or path_flags.get('has_auth_path', False)
 
     def _extract_path_flags(self, domain: str) -> Dict[str, Any]:
-        """Extract path-based flags for additional context."""
+        """Enhanced path flag extraction."""
         try:
             if not domain.startswith(('http://', 'https://')):
                 domain = 'http://' + domain
             parsed = urlparse(domain)
             path = parsed.path.lower()
+            query = parsed.query.lower()
         except:
             path = ""
+            query = ""
         
-        auth_patterns = r'(login|signin|auth|verify|secure|account|portal|billing)'
+        # Enhanced auth patterns
+        auth_patterns = r'/(login|signin|auth|verify|secure|account|portal|billing|payment|wallet|checkout)(/|$|\?)'
+        auth_in_query = r'(login|signin|auth|verify|account)='
+        
+        has_auth_path = bool(re.search(auth_patterns, path))
+        has_auth_query = bool(re.search(auth_in_query, query))
         
         return {
-            'has_auth_path': bool(re.search(auth_patterns, path)),
+            'has_auth_path': has_auth_path or has_auth_query,
             'path_length': len(path),
-            'has_path': len(path) > 1
+            'has_path': len(path) > 1,
+            'path': path,
+            'query': query
         }
 
     def _contains_brand_with_keywords(self, tokens: Set[str], brand: str) -> bool:
         """Check if tokens contain brand + impersonation keywords."""
-        if not tokens or not brand:
-            return False
-        
-        # Check if brand appears in tokens (exact or as substring)
-        brand_found = False
-        if brand in tokens:
-            brand_found = True
-        else:
-            # Check for brand as substring of tokens
-            for token in tokens:
-                if len(token) >= len(brand) and (brand in token):
-                    brand_found = True
-                    break
-        
-        return brand_found and bool(tokens & self.impersonation_keywords)
+        # Must contain the brand name AND at least one keyword
+        return brand in tokens and bool(tokens & self.impersonation_keywords)
 
     def _get_distance_threshold(self, brand: str, suspicious_tld: bool) -> int:
-        """Get Levenshtein threshold based on brand length."""
-        length = len(brand)
-        if length <= 4:
-            threshold = 1
-        elif length <= 9:
-            threshold = 2
+        """Enhanced distance threshold with brand length consideration."""
+        brand_len = len(brand)
+        
+        if brand_len <= 4:
+            base_threshold = 1
+        elif brand_len <= 8:
+            base_threshold = 2
         else:
-            threshold = 3
+            base_threshold = 3
         
-        # Add 1 for suspicious TLDs
+        # Increase threshold for suspicious TLDs (more permissive)
         if suspicious_tld:
-            threshold += 1
+            base_threshold += 1
         
-        return threshold
-
-    def _create_match_result(self, brand_domain: str, match_type: str, distance: int, 
-                            confidence: float, etld1: str, tld: str, 
-                            extra_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create standardized match result."""
-        return {
-            'brand': brand_domain,
-            'type': match_type,
-            'distance': distance,
-            'confidence': min(confidence, 0.99),  # Cap at 99%
-            'category': self._find_brand_category(brand_domain),
-            'registrable_domain': etld1,
-            'brand_registrable': brand_domain,
-            'suspicious_tld': self._is_suspicious_tld(tld.split('.')[-1]),
-            'tld': tld,
-            **extra_data
-        }
-
-    def get_brand_similarity_score(self, domain: str) -> Dict[str, Any]:
-        """
-        Get brand similarity analysis for Tier-0 scoring.
-        Maps to structured reason payload for logging.
-        """
-        similar_brands = self.find_similar_brands(domain)
-        
-        if not similar_brands:
-            return {'score': 0, 'reasons': [], 'details': {}}
-        
-        # Get best match
-        best_match = similar_brands[0]
-        match_type = best_match['type']
-        suspicious_tld = best_match['suspicious_tld']
-        
-        # Map to Tier-0 scoring
-        score = 0
-        reasons = []
-        
-        if match_type == 'exact_match_different_tld':
-            if suspicious_tld:
-                score = 4  # danger
-                reasons = ['brand_impersonation_high_risk', 'suspicious_domain']
-            else:
-                score = 2  # warning
-                reasons = ['brand_impersonation']
-        
-        elif match_type == 'brand_with_keywords':
-            if suspicious_tld:
-                score = 4  # danger
-                reasons = ['brand_impersonation_high_risk', 'impersonation_keywords']
-            else:
-                score = 2  # warning
-                reasons = ['brand_impersonation', 'impersonation_keywords']
-        
-        elif match_type == 'lookalike':
-            distance = best_match['distance']
-            has_auth_path = best_match.get('path_flags', {}).get('has_auth_path', False)
-            
-            if distance <= 1:
-                score = 2  # warning
-                reasons = ['brand_similarity']
-                # Boost to danger if suspicious TLD or auth path
-                if suspicious_tld or has_auth_path:
-                    score = 4  # danger
-                    reasons = ['brand_impersonation_high_risk']
-            else:
-                score = 1  # low risk
-                reasons = ['brand_similarity']
-        
-        # Create structured reason payload for logging
-        reason_payload = {
-            "reason": "brand_similarity",
-            "type": match_type,
-            "brand": best_match['brand'].split('.')[0],
-            "distance": best_match['distance'],
-            "confidence": round(best_match['confidence'], 3),
-            "suspicious_tld": suspicious_tld,
-            "etld1": best_match['registrable_domain']
-        }
-        
-        # Add type-specific details
-        if 'keywords_found' in best_match:
-            reason_payload['keywords_found'] = best_match['keywords_found']
-        if 'path_flags' in best_match:
-            reason_payload['path_flags'] = best_match['path_flags']
-        
-        return {
-            'score': score,
-            'reasons': reasons,
-            'details': reason_payload,
-            'all_matches': similar_brands
-        }
-
-    def _get_brand_metadata(self, brand_domain: str) -> Dict[str, Any]:
-        """Enhanced brand metadata with better official domain lists."""
-        brand_name = brand_domain.split('.')[0]
-        
-        # Comprehensive official domains for major brands
-        official_domains_map = {
-            'microsoft': {
-                'microsoft.com', 'microsoftonline.com', 'live.com', 'outlook.com',
-                'office.com', 'xbox.com', 'msn.com', 'bing.com', 'skype.com'
-            },
-            'google': {
-                'google.com', 'gmail.com', 'youtube.com', 'blogger.com',
-                'googleusercontent.com', 'googleapis.com', 'gstatic.com'
-            },
-            'apple': {
-                'apple.com', 'icloud.com', 'me.com', 'mac.com', 'itunes.com'
-            },
-            'amazon': {
-                'amazon.com', 'aws.amazon.com', 'amazonaws.com', 'smile.amazon.com'
-            },
-            'paypal': {
-                'paypal.com', 'paypalobjects.com'
-            },
-            'chase': {
-                'chase.com', 'jpmorgan.com', 'jpmorganchase.com'
-            }
-        }
-        
-        official_domains = official_domains_map.get(brand_name, {brand_domain})
-        
-        return {
-            'official_domains': official_domains,
-            'brand_name': brand_name,
-            'is_dictionary_word': brand_name in self.dictionary_word_brands
-        }
+        return base_threshold
 
     def _levenshtein_distance(self, s1: str, s2: str) -> int:
-        """Optimized Levenshtein distance calculation."""
+        """Calculate Levenshtein distance between two strings."""
         if len(s1) < len(s2):
-            return self._levenshtein_distance(s2, s1)
+            s1, s2 = s2, s1
+        
         if len(s2) == 0:
             return len(s1)
-        
-        # Fast exit for very different lengths
-        if abs(len(s1) - len(s2)) > 3:
-            return abs(len(s1) - len(s2))
         
         previous_row = list(range(len(s2) + 1))
         for i, c1 in enumerate(s1):
@@ -609,16 +587,42 @@ class ReputationService:
         
         return previous_row[-1]
 
+    def _create_match_result(self, brand_domain: str, match_type: str, distance: int, 
+                           confidence: float, etld1: str, tld: str, metadata: Dict) -> Dict[str, Any]:
+        """Create a standardized match result."""
+        return {
+            'brand_domain': brand_domain,
+            'brand': brand_domain.split('.')[0],  # Add this for test compatibility
+            'type': match_type,
+            'distance': distance,
+            'confidence': round(confidence, 3),
+            'etld1': etld1,
+            'tld': tld,
+            'metadata': metadata
+        }
+
+    def _get_brand_metadata(self, brand_domain: str) -> Dict[str, Any]:
+        """Get metadata for a brand domain."""
+        # For now, return empty metadata. This can be extended with:
+        # - Official subdomains list
+        # - Category information
+        # - Risk level
+        return {
+            'official_domains': set(),  # e.g., {'support.microsoft.com', 'login.microsoft.com'}
+            'category': self._find_brand_category(brand_domain),
+            'risk_level': 'medium'
+        }
+
     def _classify_similarity_type(self, domain_slim: str, brand: str) -> str:
-        """Enhanced similarity type classification."""
+        """Enhanced similarity classification."""
         if len(domain_slim) == len(brand):
             diff_count = sum(1 for a, b in zip(domain_slim, brand) if a != b)
             if diff_count == 1:
                 # Check if it's a confusable substitution
                 for i, (a, b) in enumerate(zip(domain_slim, brand)):
                     if a != b:
-                        confusables = {'0': 'o', '1': 'l', '3': 'e', '5': 's'}
-                        if a in confusables and confusables[a] == b:
+                        confusables = {'o': '0', 'l': '1', 'e': '3', 's': '5'}  # Reversed mapping
+                        if b in confusables and confusables[b] == a:
                             return "confusable_substitution"
                         return "single_character_substitution"
             elif diff_count == 2:
@@ -680,72 +684,65 @@ class ReputationService:
         Returns analysis of found suspicious content.
         """
         if not text:
-            return {"total_score": 0, "found_patterns": [], "pattern_types": []}
+            return {"found_keywords": [], "risk_level": "low", "patterns": []}
         
         text_lower = text.lower()
-        found_patterns = []
-        total_score = 0
+        found_keywords = []
+        patterns = []
         
-        # Check hype keywords
-        hype_keywords = self.suspicious_indicators.get('hype_keywords', [])
-        for keyword in hype_keywords:
-            if keyword in text_lower:
-                found_patterns.append({
-                    'type': 'hype_language',
-                    'keyword': keyword,
-                    'score': 1
-                })
-                total_score += 1
+        # Check for suspicious keywords from our indicators
+        suspicious_keywords = self.suspicious_indicators.get('keywords', {})
         
-        # Check financial danger keywords
-        financial_keywords = self.suspicious_indicators.get('financial_danger_keywords', [])
-        for keyword in financial_keywords:
-            if keyword in text_lower:
-                found_patterns.append({
-                    'type': 'financial_verification',
-                    'keyword': keyword,
-                    'score': 2
-                })
-                total_score += 2
-        
-        # Check health scam keywords
-        health_keywords = self.suspicious_indicators.get('health_scam_keywords', [])
-        for keyword in health_keywords:
-            if keyword in text_lower:
-                found_patterns.append({
-                    'type': 'health_claims',
-                    'keyword': keyword,
-                    'score': 1
-                })
-                total_score += 1
-        
-        # Check urgency patterns (regex)
-        urgency_patterns = self.suspicious_indicators.get('urgency_patterns', [])
-        for pattern in urgency_patterns:
-            try:
-                matches = re.findall(pattern, text_lower)
-                for match in matches:
-                    found_patterns.append({
-                        'type': 'urgency_pattern',
-                        'pattern': pattern,
-                        'match': match,
-                        'score': 1
+        for category, keywords in suspicious_keywords.items():
+            for keyword in keywords:
+                if keyword.lower() in text_lower:
+                    found_keywords.append({
+                        "keyword": keyword,
+                        "category": category
                     })
-                    total_score += 1
-            except re.error:
-                continue  # Skip invalid regex patterns
+        
+        # Check for suspicious patterns
+        suspicious_patterns = self.suspicious_indicators.get('patterns', {})
+        
+        for pattern_name, pattern_info in suspicious_patterns.items():
+            if isinstance(pattern_info, dict) and 'regex' in pattern_info:
+                try:
+                    pattern = re.compile(pattern_info['regex'], re.IGNORECASE)
+                    matches = pattern.findall(text)
+                    if matches:
+                        patterns.append({
+                            "pattern": pattern_name,
+                            "matches": matches,
+                            "weight": pattern_info.get('weight', 1)
+                        })
+                except re.error:
+                    logger.warning(f"Invalid regex pattern: {pattern_info['regex']}")
+        
+        # Determine risk level
+        total_weight = sum(p.get('weight', 1) for p in patterns) + len(found_keywords)
+        
+        if total_weight >= 5:
+            risk_level = "high"
+        elif total_weight >= 2:
+            risk_level = "medium"
+        else:
+            risk_level = "low"
         
         return {
-            "total_score": total_score,
-            "found_patterns": found_patterns,
-            "pattern_types": list(set(p['type'] for p in found_patterns))
+            "found_keywords": found_keywords,
+            "patterns": patterns,
+            "risk_level": risk_level,
+            "total_weight": total_weight
         }
     
-    def get_heuristic_weight(self, category: str, item: str) -> int:
-        """Get heuristic weight for a specific category and item"""
-        weights = self.heuristic_weights.get('weights', {})
-        category_weights = weights.get(category, {})
-        return category_weights.get(item, 0)
+    def get_heuristic_weights(self) -> Dict[str, Any]:
+        """Get heuristic weights for scoring"""
+        return self.heuristic_weights.get('weights', {
+            'domain_reputation': 2,
+            'brand_similarity': 2,
+            'suspicious_keywords': 1,
+            'technical_indicators': 1
+        })
     
     def get_verdict_thresholds(self) -> Dict[str, int]:
         """Get verdict thresholds for scoring"""
