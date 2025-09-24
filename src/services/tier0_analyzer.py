@@ -1,4 +1,6 @@
 # api/src/services/tier0_analyzer.py
+# Complete drag-and-drop version with enhanced brand similarity integration
+
 import re
 import logging
 from typing import Dict, Any, List, Optional
@@ -95,7 +97,7 @@ class Tier0Analyzer:
             reasons.extend(url_reasons)
             details['url_analysis'] = url_details
             
-            # 3. Brand look-alike analysis
+            # 3. Enhanced brand similarity analysis (UPDATED)
             brand_score, brand_reasons, brand_details = self._analyze_brand_similarity(url_info)
             score += brand_score
             reasons.extend(brand_reasons)
@@ -216,105 +218,64 @@ class Tier0Analyzer:
         return score, reasons, details
     
     def _analyze_brand_similarity(self, url_info: Dict[str, Any]) -> tuple[int, List[str], Dict[str, Any]]:
-        """Analyze domain for brand impersonation"""
-        score = 0
-        reasons = []
-        details = {}
-        
+        """
+        ENHANCED: Analyze domain for brand impersonation using production-ready detection.
+        """
         domain = url_info.get('domain', '')
         if not domain:
             return 0, [], {}
         
-        # Extract registrable domain and components
-        domain_parts = domain.lower().split('.')
-        if len(domain_parts) >= 2:
-            domain_name = domain_parts[-2]  # Main domain part
-            tld = domain_parts[-1]          # TLD
-            registrable_domain = f"{domain_name}.{tld}"
-        else:
-            domain_name = domain.lower()
-            tld = ""
-            registrable_domain = domain.lower()
-        
-        # Check for exact brand token impersonation on suspicious TLDs
-        suspicious_tlds = ['tk', 'ml', 'ga', 'cf', 'top', 'click', 'download', 'stream']
-        impersonation_keywords = ['support', 'secure', 'login', 'update', 'verify', 'account', 'service']
-        
-        # Look for exact brand matches + suspicious keywords on bad TLDs
-        brand_impersonation_detected = False
-        for brand_domain in self.reputation.brand_domains:
-            brand_name = brand_domain.split('.')[0]  # e.g., "microsoft" from "microsoft.com"
+        # Use the new production-ready brand similarity scoring
+        try:
+            similarity_result = self.reputation.get_brand_similarity_score(domain)
+            score = similarity_result['score']
+            reasons = similarity_result['reasons']
+            details = similarity_result['details']
+            all_matches = similarity_result.get('all_matches', [])
             
-            # Check if domain contains exact brand name + impersonation keyword
-            if (brand_name in domain_name and 
-                any(keyword in domain_name for keyword in impersonation_keywords) and
-                tld in suspicious_tlds):
-                
-                score += 4  # Jump straight to danger
-                reasons.append("brand_impersonation_high_risk")
-                reasons.append("impersonation_keywords")
-                brand_impersonation_detected = True
-                
-                category = self.reputation._find_brand_category(brand_domain)
-                details.update({
-                    'exact_brand_match': brand_name,
-                    'impersonation_keywords': [kw for kw in impersonation_keywords if kw in domain_name],
-                    'suspicious_tld': tld,
-                    'brand_category': category
+            # Log structured data for analytics
+            if score > 0 and details:
+                logger.info(f"Brand similarity detected: {domain} → {details}")
+            
+            # Prepare analysis details for response
+            analysis_details = {}
+            if all_matches:
+                best_match = all_matches[0]
+                analysis_details.update({
+                    'matched_brand': best_match['brand'],
+                    'match_type': best_match['type'],
+                    'confidence': best_match['confidence'],
+                    'distance': best_match['distance'],
+                    'suspicious_tld': best_match['suspicious_tld'],
+                    'registrable_domain': best_match['registrable_domain'],
+                    'all_matches': [
+                        {
+                            'brand': m['brand'],
+                            'type': m['type'],
+                            'confidence': round(m['confidence'], 3),
+                            'distance': m['distance']
+                        }
+                        for m in all_matches[:3]  # Top 3 matches
+                    ]
                 })
                 
-                logger.info(f"Exact brand impersonation detected: {domain} contains '{brand_name}' + keywords on .{tld}")
-                break
-        
-        # If no exact match found, try similarity-based detection
-        if not brand_impersonation_detected:
-            similar_brands = self.reputation.find_similar_brands(domain, max_distance=2)
+                # Add type-specific details
+                if 'keywords_found' in best_match:
+                    analysis_details['keywords_found'] = best_match['keywords_found']
+                if 'path_flags' in best_match:
+                    analysis_details['path_flags'] = best_match['path_flags']
+                if 'similarity_type' in best_match:
+                    analysis_details['similarity_type'] = best_match['similarity_type']
             
-            if similar_brands:
-                # Get the closest match
-                closest_brand = similar_brands[0]
-                distance = closest_brand['distance']
-                similarity_type = closest_brand['similarity_type']
-                brand_category = closest_brand['category']
-                
-                # Score based on distance and category
-                base_score = 0
-                if distance == 1:
-                    if brand_category in ['banks', 'government', 'payment_processors']:
-                        base_score = self.reputation.get_heuristic_weight('brand_similarity', 'exact_match_different_tld')
-                        reasons.append("brand_impersonation_high_risk")
-                    else:
-                        base_score = self.reputation.get_heuristic_weight('brand_similarity', 'typosquatting')
-                        reasons.append("brand_impersonation")
-                elif distance == 2:
-                    base_score = self.reputation.get_heuristic_weight('brand_similarity', 'typosquatting')
-                    reasons.append("brand_similarity")
-                
-                # BONUS: Brand similarity + suspicious TLD = extra danger
-                if base_score > 0 and tld in suspicious_tlds:
-                    bonus_score = 2  # Extra penalty for brand + bad TLD combo
-                    score += base_score + bonus_score
-                    reasons.append("brand_impersonation_suspicious_tld")
-                    logger.info(f"Brand similarity + bad TLD detected: {domain} (base: {base_score}, bonus: {bonus_score})")
-                else:
-                    score += base_score
-                
-                details.update({
-                    'similar_brands': similar_brands[:3],  # Top 3 matches
-                    'closest_brand': closest_brand['brand'],
-                    'similarity_type': similarity_type,
-                    'edit_distance': distance,
-                    'tld_bonus_applied': tld in suspicious_tlds and base_score > 0
-                })
-        
-        # Check for subdomain impersonation (e.g., paypal.fake-site.com)
-        if len(domain_parts) > 2:
-            main_part = domain_parts[0]
-            if self.reputation.is_brand_domain(f"{main_part}.com"):
-                score += self.reputation.get_heuristic_weight('brand_similarity', 'subdomain_impersonation')
-                reasons.append("subdomain_brand_impersonation")
-        
-        return score, reasons, details
+            return score, reasons, analysis_details
+            
+        except Exception as e:
+            logger.error(f"Brand similarity analysis failed for {domain}: {e}")
+            # Fallback to basic domain reputation
+            domain_score = self.reputation.get_domain_score(domain)
+            if domain_score > 0:
+                return domain_score, ['suspicious_domain'], {'fallback_used': True, 'error': str(e)}
+            return 0, [], {'error': str(e)}
     
     def _analyze_content(self, content: str, url_info: Dict[str, Any]) -> tuple[int, List[str], Dict[str, Any]]:
         """Analyze page content for suspicious patterns"""
@@ -401,11 +362,28 @@ class Tier0Analyzer:
             score += self.reputation.get_heuristic_weight('technical_signals', 'blocked_by_security')
             reasons.append("blocked_by_security")
         
+        # Check for timeout/slow response patterns
+        if hasattr(fetch_result, 'fetch_time_ms') and fetch_result.fetch_time_ms > 10000:
+            score += 1
+            reasons.append("site_slow_response")
+        
+        # Check for fetch failures
+        if hasattr(fetch_result, 'error') and fetch_result.error:
+            if 'ConnectError' in str(fetch_result.error):
+                score += 1
+                reasons.append("fetch_failed")
+                reasons.append("fetch_error_ConnectError")
+            elif 'timeout' in str(fetch_result.error).lower():
+                score += 1
+                reasons.append("fetch_failed")
+                reasons.append("fetch_timeout_stage_unknown")
+        
         details.update({
             'redirect_count': redirect_count,
             'final_url': getattr(fetch_result, 'final_url', ''),
             'status_code': getattr(fetch_result, 'status_code', None),
-            'was_blocked': getattr(fetch_result, 'was_blocked', False)
+            'was_blocked': getattr(fetch_result, 'was_blocked', False),
+            'fetch_time_ms': getattr(fetch_result, 'fetch_time_ms', None)
         })
         
         return score, reasons, details
@@ -415,66 +393,127 @@ class Tier0Analyzer:
         if not text:
             return {'caps_ratio': 0, 'exclamation_count': 0, 'word_count': 0}
         
-        # Count ALL CAPS words
-        caps_matches = self.patterns['all_caps'].findall(text)
-        total_caps = sum(len(match) for match in caps_matches)
+        # Count capital letters and words
+        caps_count = sum(1 for c in text if c.isupper())
+        total_chars = len([c for c in text if c.isalpha()])
+        caps_ratio = caps_count / total_chars if total_chars > 0 else 0
         
         # Count exclamation marks
-        exclamation_count = len(self.patterns['excessive_exclamation'].findall(text))
+        exclamation_count = text.count('!')
         
-        # Basic word count
-        words = text.split()
-        word_count = len(words)
-        
-        # Calculate caps ratio
-        total_letters = sum(1 for char in text if char.isalpha())
-        caps_ratio = total_caps / total_letters if total_letters > 0 else 0
+        # Count words (rough estimate)
+        word_count = len(text.split())
         
         return {
             'caps_ratio': caps_ratio,
             'exclamation_count': exclamation_count,
             'word_count': word_count,
-            'total_letters': total_letters,
-            'total_caps': total_caps
+            'total_chars': total_chars,
+            'caps_count': caps_count
         }
     
     def _has_suspicious_contact_info(self, content: str) -> bool:
         """Check for suspicious contact information patterns"""
-        # Check for Gmail addresses for "business" websites
-        email_matches = self.patterns['email_pattern'].findall(content.lower())
-        suspicious_emails = [email for email in email_matches 
-                           if any(domain in email for domain in ['@gmail.com', '@yahoo.com', '@hotmail.com'])]
+        # Check for phone numbers in suspicious contexts
+        phone_matches = self.patterns['phone_number'].findall(content)
+        if len(phone_matches) > 2:  # More than 2 phone numbers might be suspicious
+            return True
         
-        # If there are business-like words but only personal email domains
-        business_words = ['llc', 'inc', 'corp', 'company', 'business', 'official', 'customer service']
-        has_business_context = any(word in content.lower() for word in business_words)
+        # Check for email addresses in suspicious contexts
+        email_matches = self.patterns['email_pattern'].findall(content)
+        if len(email_matches) > 3:  # More than 3 emails might be suspicious
+            return True
         
-        return has_business_context and len(suspicious_emails) > 0
+        # Check for suspicious contact patterns
+        suspicious_contact_patterns = [
+            r'call now',
+            r'urgent.{0,20}contact',
+            r'immediate.{0,20}response',
+            r'limited time.{0,20}call'
+        ]
+        
+        content_lower = content.lower()
+        for pattern in suspicious_contact_patterns:
+            if re.search(pattern, content_lower):
+                return True
+        
+        return False
     
     def _should_escalate_to_tier1(self, score: int, reasons: List[str], verdict: str) -> bool:
-        """
-        Determine if this check should be escalated to Tier-1 LLM analysis.
+        """Determine if analysis should escalate to Tier-1 (LLM)"""
+        # Escalate conditions for paid users:
+        # 1. Borderline warning cases that could benefit from LLM analysis
+        # 2. Sensitive categories (health/finance) with unclear verdict
+        # 3. Brand impersonation cases that need deeper analysis
         
-        Escalate if:
-        - Verdict is warning (ambiguous cases)
-        - Contains financial/health content with borderline score
-        - Brand impersonation detected
-        """
-        # Always escalate warnings (ambiguous cases)
-        if verdict == "warning":
+        if verdict == "warning" and score >= 2:
+            # Check for sensitive content that warrants LLM review
+            sensitive_reasons = {
+                'financial_verification_request', 'unverified_health_claims',
+                'brand_impersonation', 'brand_similarity'
+            }
+            if any(reason in sensitive_reasons for reason in reasons):
+                return True
+        
+        # Always escalate if we have brand impersonation signals
+        if any('brand' in reason for reason in reasons):
             return True
         
-        # Escalate financial verification requests with medium scores
-        if "financial_verification_request" in reasons and 1 <= score <= 3:
-            return True
-        
-        # Escalate health claims that aren't clear-cut
-        if "unverified_health_claims" in reasons and score <= 2:
-            return True
-        
-        # Escalate brand impersonation cases
-        if any("brand" in reason for reason in reasons):
-            return True
-        
-        # Don't escalate clear-cut cases
         return False
+    
+    def get_analysis_summary(self, result: AnalysisResult) -> str:
+        """Generate human-readable summary of analysis"""
+        if result.verdict == "ok":
+            return "No significant risks detected"
+        
+        summary_parts = []
+        
+        # Brand-related summaries
+        brand_details = result.details.get('brand_analysis', {})
+        if brand_details.get('matched_brand'):
+            brand = brand_details['matched_brand']
+            match_type = brand_details.get('match_type', 'similarity')
+            
+            if match_type == 'exact_match_different_tld':
+                summary_parts.append(f"Appears to impersonate {brand}")
+            elif match_type == 'brand_with_keywords':
+                keywords = brand_details.get('keywords_found', [])
+                if keywords:
+                    summary_parts.append(f"Contains {brand} branding with suspicious keywords: {', '.join(keywords[:2])}")
+                else:
+                    summary_parts.append(f"Contains {brand} branding with impersonation keywords")
+            elif match_type == 'lookalike':
+                summary_parts.append(f"Domain similar to {brand}")
+        
+        # Domain-related summaries
+        domain_details = result.details.get('domain_analysis', {})
+        if 'suspicious_domain' in result.reasons or 'suspicious_tld' in result.reasons:
+            tld = domain_details.get('tld', '')
+            if tld in ['.tk', '.ml', '.ga', '.cf']:
+                summary_parts.append(f"Uses suspicious {tld} domain")
+            else:
+                summary_parts.append("Uses suspicious domain")
+        
+        # Content-related summaries
+        if 'financial_verification_request' in result.reasons:
+            summary_parts.append("Requests financial verification")
+        if 'hype_language' in result.reasons:
+            summary_parts.append("Uses high-pressure sales language")
+        if 'offsite_form_submission' in result.reasons:
+            summary_parts.append("Forms submit to external sites")
+        if 'unverified_health_claims' in result.reasons:
+            summary_parts.append("Makes unverified health claims")
+        
+        # Technical summaries
+        if 'no_https' in result.reasons:
+            summary_parts.append("Does not use secure HTTPS")
+        if 'excessive_redirects' in result.reasons:
+            summary_parts.append("Uses excessive redirects")
+        if 'fetch_failed' in result.reasons:
+            summary_parts.append("Website failed to load properly")
+        
+        if not summary_parts:
+            return f"Flagged with {result.score} risk points"
+        
+        # Format as bullet points
+        return "• " + "\n• ".join(summary_parts[:3])  # Limit to top 3 points
