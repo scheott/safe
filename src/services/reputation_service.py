@@ -8,6 +8,10 @@ import unicodedata
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Set
 from urllib.parse import urlparse
+import re
+import unicodedata
+from urllib.parse import urlparse
+from typing import Dict, Any, List, Set
 import time
 
 logger = logging.getLogger(__name__)
@@ -429,9 +433,12 @@ class ReputationService:
             }
         }
 
-    # SUPPORTING METHODS FOR BRAND SIMILARITY (FIXED VERSIONS)
+        # SUPPORTING METHODS FOR BRAND SIMILARITY (FIXED VERSIONS)
     def _extract_etld1_robust(self, domain: str) -> str:
-        """Robust eTLD+1 extraction with multi-part TLD support."""
+        """
+        FIXED: Robust eTLD+1 extraction with proper subdomain handling.
+        This fixes the official subdomain false positive issues.
+        """
         if not domain:
             return ""
         
@@ -440,9 +447,9 @@ class ReputationService:
             if not domain.startswith(('http://', 'https://')):
                 domain = 'http://' + domain
             parsed = urlparse(domain)
-            hostname = parsed.hostname or domain
+            hostname = parsed.hostname or domain.replace('http://', '').replace('https://', '')
         except:
-            hostname = domain
+            hostname = domain.replace('http://', '').replace('https://', '')
         
         # Normalize
         hostname = hostname.lower().strip()
@@ -453,20 +460,30 @@ class ReputationService:
         if len(parts) < 2:
             return hostname
         
-        # Check for multi-part TLDs
-        for tld_parts in [3, 2]:  # Check 3-part first, then 2-part
+        # FIX 2: Enhanced multi-part TLD detection with comprehensive list
+        comprehensive_multi_tlds = {
+            'co.uk', 'com.au', 'co.jp', 'co.nz', 'com.br', 'co.za',
+            'com.mx', 'co.in', 'com.sg', 'co.kr', 'com.tw', 'co.th',
+            'com.ar', 'com.co', 'com.pe', 'com.ve', 'com.ec', 'com.uy',
+            'com.py', 'com.bo', 'com.cl', 'co.il', 'co.ke', 'co.tz',
+            'co.bw', 'co.zm', 'co.zw', 'ac.uk', 'org.uk', 'net.uk',
+            'gov.uk', 'sch.uk', 'police.uk', 'mod.uk', 'nhs.uk'
+        }
+        
+        # Check for multi-part TLDs (3-part first, then 2-part)
+        for tld_parts in [3, 2]:
             if len(parts) >= tld_parts + 1:  # Need at least one label + TLD parts
                 potential_tld = '.'.join(parts[-tld_parts:])
-                if potential_tld in self.multi_part_tlds:
+                if potential_tld in comprehensive_multi_tlds:
                     return '.'.join(parts[-(tld_parts + 1):])  # Include one more part
         
-        # Default: take last 2 parts
+        # Default: take last 2 parts (domain + tld)
         return '.'.join(parts[-2:])
 
     def _normalize_label_robust(self, label: str) -> str:
         """
         FIXED: Comprehensive label normalization with enhanced confusable mapping.
-        This was the key missing piece!
+        This was the key missing piece causing homoglyph detection failures!
         """
         if not label:
             return ""
@@ -482,22 +499,36 @@ class ReputationService:
             '0': 'o', '1': 'l', '3': 'e', '5': 's', '6': 'g', '8': 'b',
             '@': 'a', '$': 's', '!': 'i',
             
-            # FIX: Critical missing mappings
+            # FIX 1: Critical missing mappings that were causing test failures
             'I': 'l',  # This was causing paypaI.com to fail!
+            'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',  # Accented i variants
+            'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',  # Accented e variants
+            'á': 'a', 'à': 'a', 'â': 'a', 'ä': 'a', 'ã': 'a',  # Accented a variants
+            'ó': 'o', 'ò': 'o', 'ô': 'o', 'ö': 'o', 'õ': 'o',  # Accented o variants
+            'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',  # Accented u variants
             
-            # Extended Unicode confusables
-            'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c', 'х': 'x',  # Cyrillic
-            'α': 'a', 'β': 'b', 'ε': 'e', 'ο': 'o', 'ρ': 'p',           # Greek
-            '⁰': 'o', '¹': 'l', '²': '2', '³': '3',                      # Superscripts
+            # Unicode confusables that were missing
+            'а': 'a',  # Cyrillic a
+            'е': 'e',  # Cyrillic e
+            'о': 'o',  # Cyrillic o
+            'р': 'p',  # Cyrillic p
+            'с': 'c',  # Cyrillic c
+            'х': 'x',  # Cyrillic x
+            'у': 'y',  # Cyrillic y
             
-            # Additional common confusables
-            'і': 'i', 'ї': 'i', 'є': 'e',  # Ukrainian
-            'ǝ': 'e', 'ɑ': 'a', 'ο': 'o',  # IPA/Greek
+            # Additional number-letter confusables
+            '2': 'z',  # Sometimes used
+            '4': 'a',  # Sometimes used
+            '7': 't',  # Sometimes used
+            '9': 'g',  # Sometimes used
         }
         
-        # Apply all mappings
-        for original, replacement in confusable_map.items():
-            s = s.replace(original, replacement)
+        # Apply confusable character replacements
+        for char, replacement in confusable_map.items():
+            s = s.replace(char, replacement)
+        
+        # Remove any remaining non-alphanumeric except hyphens
+        s = re.sub(r'[^a-z0-9\-]', '', s)
         
         return s
 
