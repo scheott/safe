@@ -58,7 +58,7 @@ class Tier0Analyzer:
             'url_shortener': re.compile(r'(bit\.ly|tinyurl|t\.co|goo\.gl|short\.link)', re.IGNORECASE)
         }
     
-    def analyze(self, url: str, fetch_result = None, content_excerpt: str = None) -> AnalysisResult:
+    def analyze(self, url: str, fetch_result=None, content_excerpt: str = None) -> AnalysisResult:
         """
         Perform complete Tier-0 analysis on URL and content.
         
@@ -71,7 +71,7 @@ class Tier0Analyzer:
             AnalysisResult with verdict, score, reasons, and details
         """
         try:
-            # Normalize URL for analysis
+            # Normalize URL for analysis using the existing url_normalizer
             url_info = self.url_normalizer.normalize_url(url)
             
             # Initialize scoring
@@ -91,31 +91,59 @@ class Tier0Analyzer:
             reasons.extend(domain_reasons)
             details['domain_analysis'] = domain_details
             
-            # 2. URL structure analysis
-            url_score, url_reasons, url_details = self._analyze_url_structure(url_info)
-            score += url_score
-            reasons.extend(url_reasons)
-            details['url_analysis'] = url_details
+            # ✅ Early return for highly reputable domains
+            if domain_score <= -2:  # Highly reputable (e.g., -2)
+                logger.info(f"Domain {url_info.get('domain')} is highly reputable, skipping further analysis")
+                return AnalysisResult(
+                    verdict="ok",
+                    score=domain_score,
+                    reasons=domain_reasons,
+                    details=details,
+                    escalate_to_tier1=False
+                )
             
-            # 3. Enhanced brand similarity analysis (UPDATED)
-            brand_score, brand_reasons, brand_details = self._analyze_brand_similarity(url_info)
-            score += brand_score
-            reasons.extend(brand_reasons)
-            details['brand_analysis'] = brand_details
+            # 2. URL structure analysis
+            try:
+                url_score, url_reasons, url_details = self._analyze_url_structure(url_info)
+                score += url_score
+                reasons.extend(url_reasons)
+                details['url_analysis'] = url_details
+            except Exception as e:
+                logger.warning(f"URL analysis failed for {url}: {e}")
+            
+            # 3. Enhanced brand similarity analysis
+            try:
+                brand_score, brand_reasons, brand_details = self._analyze_brand_similarity(url_info)
+                score += brand_score
+                reasons.extend(brand_reasons)
+                details['brand_analysis'] = brand_details
+            except Exception as e:
+                logger.warning(f"Brand analysis failed for {url}: {e}")
             
             # 4. Content analysis (if available)
             if content_excerpt:
-                content_score, content_reasons, content_details = self._analyze_content(content_excerpt, url_info)
-                score += content_score
-                reasons.extend(content_reasons)
-                details['content_analysis'] = content_details
+                try:
+                    content_score, content_reasons, content_details = self._analyze_content(content_excerpt, url_info)
+                    score += content_score
+                    reasons.extend(content_reasons)
+                    details['content_analysis'] = content_details
+                except Exception as e:
+                    logger.warning(f"Content analysis failed for {url}: {e}")
+                    # Only add analysis_error if this is the main failure point
+                    # and we don't have domain-level confidence
+                    if domain_score >= 0:  # Unknown or suspicious domain
+                        reasons.append("analysis_error")
+                        score += 1  # Small penalty for analysis failures on unknown domains
             
             # 5. Technical indicators (if fetch_result available)
             if fetch_result:
-                tech_score, tech_reasons, tech_details = self._analyze_technical_indicators(fetch_result, url_info)
-                score += tech_score
-                reasons.extend(tech_reasons)
-                details['technical_analysis'] = tech_details
+                try:
+                    tech_score, tech_reasons, tech_details = self._analyze_technical_indicators(fetch_result, url_info)
+                    score += tech_score
+                    reasons.extend(tech_reasons)
+                    details['technical_analysis'] = tech_details
+                except Exception as e:
+                    logger.warning(f"Technical analysis failed for {url}: {e}")
             
             # 6. Determine final verdict
             verdict = self.reputation.score_to_verdict(score)
@@ -132,7 +160,24 @@ class Tier0Analyzer:
             )
             
         except Exception as e:
-            logger.error(f"Error in Tier-0 analysis: {e}")
+            logger.error(f"Critical error in Tier-0 analysis for {url}: {e}")
+            # Only return analysis_error for truly critical failures
+            # Try to extract domain for basic analysis using url_normalizer
+            try:
+                url_info = self.url_normalizer.normalize_url(url)
+                domain_score = self.reputation.get_domain_score(url_info.get('domain', ''))
+                if domain_score <= -2:
+                    # Even with errors, trust reputable domains
+                    return AnalysisResult(
+                        verdict="ok",
+                        score=domain_score,
+                        reasons=["reputable_domain"],
+                        details={"error": str(e), "fallback": "domain_reputation"},
+                        escalate_to_tier1=False
+                    )
+            except:
+                pass  # Fall through to error state
+            
             return AnalysisResult(
                 verdict="warning",
                 score=2,
@@ -140,7 +185,7 @@ class Tier0Analyzer:
                 details={"error": str(e)},
                 escalate_to_tier1=False
             )
-    
+        
     def _analyze_domain(self, url_info: Dict[str, Any]) -> tuple[int, List[str], Dict[str, Any]]:
         """Analyze domain reputation and characteristics"""
         score = 0
@@ -286,59 +331,49 @@ class Tier0Analyzer:
         if not content:
             return 0, [], {}
         
-        # Check suspicious keywords
-        keyword_analysis = self.reputation.check_suspicious_keywords(content)
-        score += keyword_analysis['total_score']
-        
-        for pattern_type in keyword_analysis['pattern_types']:
-            if pattern_type == 'financial_verification':
-                reasons.append("financial_verification_request")
-            elif pattern_type == 'hype_language':
-                reasons.append("hype_language")
-            elif pattern_type == 'health_claims':
-                reasons.append("unverified_health_claims")
-            elif pattern_type == 'urgency_pattern':
-                reasons.append("urgency_tactics")
-        
-        # Analyze form actions (off-site posting)
-        form_matches = self.patterns['form_action'].findall(content)
-        current_domain = url_info.get('domain', '')
-        
-        offsite_forms = 0
-        for form_action in form_matches:
-            if form_action.startswith('http'):
-                parsed_action = urlparse(form_action)
-                if parsed_action.netloc and parsed_action.netloc != current_domain:
-                    offsite_forms += 1
-        
-        if offsite_forms > 0:
-            score += self.reputation.get_heuristic_weight('content_heuristics', 'offsite_form_action')
-            reasons.append("offsite_form_submission")
-        
-        # Analyze text characteristics
-        text_stats = self._analyze_text_characteristics(content)
-        
-        if text_stats['caps_ratio'] > 0.3:  # >30% ALL CAPS
-            score += self.reputation.get_heuristic_weight('content_heuristics', 'high_caps_ratio')
-            reasons.append("excessive_caps")
-        
-        if text_stats['exclamation_count'] > 5:
-            score += 1
-            reasons.append("excessive_exclamation")
-        
-        # Check for suspicious contact info
-        if self._has_suspicious_contact_info(content):
-            score += self.reputation.get_heuristic_weight('content_heuristics', 'suspicious_contact')
-            reasons.append("suspicious_contact_info")
-        
-        details.update({
-            'keyword_analysis': keyword_analysis,
-            'text_stats': text_stats,
-            'offsite_forms': offsite_forms,
-            'form_actions': form_matches[:3]  # First 3 form actions
-        })
-        
-        return score, reasons, details
+        try:
+            # Check suspicious keywords
+            keyword_analysis = self.reputation.check_suspicious_keywords(content)
+            score += keyword_analysis['total_score']  # ✅ This should now work
+            
+            for pattern_type in keyword_analysis.get('pattern_types', []):
+                if pattern_type == 'financial_verification':
+                    reasons.append("financial_verification_request")
+                elif pattern_type == 'hype_language':
+                    reasons.append("hype_language")
+                elif pattern_type == 'health_claims':
+                    reasons.append("unverified_health_claims")
+                elif pattern_type == 'urgency_pattern':
+                    reasons.append("urgency_tactics")
+            
+            # ✅ Store keyword analysis details
+            details['keyword_analysis'] = {
+                'total_score': keyword_analysis['total_score'],
+                'risk_level': keyword_analysis['risk_level'],
+                'pattern_count': len(keyword_analysis.get('patterns', []))
+            }
+            
+            # Analyze form actions (off-site posting)
+            if hasattr(self, 'patterns') and 'form_action' in self.patterns:
+                form_matches = self.patterns['form_action'].findall(content)
+                current_domain = url_info.get('domain', '')
+                
+                offsite_forms = 0
+                for form_action in form_matches:
+                    if current_domain not in form_action.lower():
+                        offsite_forms += 1
+                
+                if offsite_forms > 0:
+                    score += self.reputation.get_heuristic_weight('content_analysis', 'offsite_form_action')
+                    reasons.append("offsite_form_action")
+                    details['offsite_forms'] = offsite_forms
+            
+            return score, reasons, details
+            
+        except Exception as e:
+            logger.error(f"Content analysis error: {e}")
+            # Return minimal penalty for content analysis errors
+            return 1, ["content_analysis_error"], {"error": str(e)}
     
     def _analyze_technical_indicators(self, fetch_result, url_info: Dict[str, Any]) -> tuple[int, List[str], Dict[str, Any]]:
         """Analyze technical indicators from fetch result"""

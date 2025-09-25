@@ -732,15 +732,22 @@ class ReputationService:
     
     def check_suspicious_keywords(self, text: str) -> Dict[str, Any]:
         """
-        Check text for suspicious keywords and patterns.
+        Check for suspicious keywords and patterns in text.
         Returns analysis of found suspicious content.
         """
         if not text:
-            return {"found_keywords": [], "risk_level": "low", "patterns": []}
+            return {
+                "found_keywords": [], 
+                "risk_level": "low", 
+                "patterns": [],
+                "pattern_types": [],
+                "total_score": 0  # ✅ Change from total_weight to total_score
+            }
         
         text_lower = text.lower()
         found_keywords = []
         patterns = []
+        pattern_types = []  # ✅ Add pattern_types list
         
         # Check for suspicious keywords from our indicators
         suspicious_keywords = self.suspicious_indicators.get('keywords', {})
@@ -752,6 +759,9 @@ class ReputationService:
                         "keyword": keyword,
                         "category": category
                     })
+                    # ✅ Add category to pattern_types
+                    if category not in pattern_types:
+                        pattern_types.append(category)
         
         # Check for suspicious patterns
         suspicious_patterns = self.suspicious_indicators.get('patterns', {})
@@ -767,15 +777,18 @@ class ReputationService:
                             "matches": matches,
                             "weight": pattern_info.get('weight', 1)
                         })
+                        # ✅ Add pattern name to pattern_types
+                        if pattern_name not in pattern_types:
+                            pattern_types.append(pattern_name)
                 except re.error:
                     logger.warning(f"Invalid regex pattern: {pattern_info['regex']}")
         
-        # Determine risk level
-        total_weight = sum(p.get('weight', 1) for p in patterns) + len(found_keywords)
+        # Determine risk level and total score
+        total_score = sum(p.get('weight', 1) for p in patterns) + len(found_keywords)  # ✅ Rename to total_score
         
-        if total_weight >= 5:
+        if total_score >= 5:
             risk_level = "high"
-        elif total_weight >= 2:
+        elif total_score >= 2:
             risk_level = "medium"
         else:
             risk_level = "low"
@@ -783,10 +796,11 @@ class ReputationService:
         return {
             "found_keywords": found_keywords,
             "patterns": patterns,
+            "pattern_types": pattern_types,  # ✅ Add pattern_types
             "risk_level": risk_level,
-            "total_weight": total_weight
+            "total_score": total_score  # ✅ Change from total_weight to total_score
         }
-    
+        
     def get_heuristic_weights(self) -> Dict[str, Any]:
         """Get heuristic weights for scoring"""
         return self.heuristic_weights.get('weights', {
