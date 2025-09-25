@@ -7,12 +7,9 @@ import re
 import unicodedata
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Set
-from urllib.parse import urlparse
-import re
-import unicodedata
-from urllib.parse import urlparse
-from typing import Dict, Any, List, Set
 import time
+from urllib.parse import urlparse
+
 
 logger = logging.getLogger(__name__)
 
@@ -181,31 +178,31 @@ class ReputationService:
                     clean_tld = tld.lstrip('.')
                     self.suspicious_tlds.add(clean_tld.lower())
     
-    # DOMAIN REPUTATION METHODS (existing functionality)
     def get_domain_score(self, domain: str) -> int:
-        """Updated to use loaded suspicious TLD list."""
+        """Get reputation score for a domain using processed cache."""
         if not domain:
             return 0
         
-        domain_parts = domain.lower().split('.')
+        d = domain.lower()
+        if d.startswith('www.'):
+            d = d[4:]
         
-        # Check if this is a known reputable domain
-        if domain in self.reputable_domains:
-            return -2  # Highly reputable
+        # direct lookup
+        if d in self.domain_scores:
+            return self.domain_scores[d]
         
-        # Check parent domain (for subdomains)
-        if len(domain_parts) > 2:
-            parent_domain = '.'.join(domain_parts[-2:])
-            if parent_domain in self.domain_scores:
-                return self.domain_scores[parent_domain]
+        # parent domain
+        parts = d.split('.')
+        if len(parts) > 2:
+            parent = '.'.join(parts[-2:])
+            if parent in self.domain_scores:
+                return self.domain_scores[parent]
         
-        # Check TLD reputation using loaded suspicious TLD list
-        if domain_parts:
-            tld = domain_parts[-1].lower()
-            if tld in self.suspicious_tlds:  # Use loaded list instead of hardcoded
-                return 2
+        # tld risk
+        tld = parts[-1]
+        if tld in self.suspicious_tlds:
+            return 2
         
-        # Default: unknown domain
         return 0
     
     def is_brand_domain(self, domain: str) -> bool:
@@ -220,7 +217,6 @@ class ReputationService:
         """Check if raw differs from brand but normalized equals brand (confusable substitution)"""
         return (raw_label.lower() != brand_name.lower()) and (norm_label == norm_brand)
     
-    # PRODUCTION-READY BRAND SIMILARITY DETECTION (FIXED VERSION)
     def find_similar_brands(self, domain: str, max_distance: int = 2) -> List[Dict[str, Any]]:
         """
         Production-ready brand similarity detection with comprehensive fixes.
@@ -234,12 +230,22 @@ class ReputationService:
         if not etld1:
             return []
         
-        # Parse components
-        label_raw = etld1.split('.')[0]  # Left part of eTLD+1
-        tld = '.'.join(etld1.split('.')[1:])     # Everything after first dot
+        # FIX 1: Parse once to get a raw-cased label for confusable mapping
+        try:
+            url = domain if domain.startswith(('http://','https://')) else 'http://' + domain
+            p = urlparse(url)
+            netloc = p.netloc or domain
+        except Exception:
+            netloc = domain
+        netloc = netloc.split('@')[-1].split(':')[0]                 # strip creds/port
+        host_raw = re.sub(r'^www\.', '', netloc, flags=re.IGNORECASE)
+        label_raw = host_raw.split('.')[0]                           # <-- PRESERVE CASE
         
-        # FIX 1: Normalize the DOMAIN LABEL first (this was the main issue!)
-        norm = self._normalize_label_robust(label_raw)  # Apply confusables to domain
+        # keep using robust eTLD+1 (lowercased) for the rest
+        tld = '.'.join(etld1.split('.')[1:])
+        
+        # normalize with confusable map (will catch PayPaI → paypal)
+        norm = self._normalize_label_robust(label_raw)
         slim = norm.replace('-', '')  # For edit distance (hyphenless)
         
         # NEW: letters-only tokens (drops digits) - this fixes google123login
@@ -322,14 +328,22 @@ class ReputationService:
                 if char_overlap < min_overlap:
                     continue
 
-                # First/last letter guard
-                if slim[0] != brand_norm[0] or slim[-1] != brand_norm[-1]:
-                    continue
+                # FIX 2: First/last letter guard (OR, not AND)
+                if len(slim) >= 3 and len(brand_norm) >= 3:
+                    ends_match = (slim[0] == brand_norm[0]) or (slim[-1] == brand_norm[-1])
+                    if not ends_match:
+                        continue
                 
                 distance = self._levenshtein_distance(slim, brand_norm)
-                if distance <= max_distance:
+                threshold = self._get_distance_threshold(brand_norm, suspicious_tld)
+                
+                # length delta guard helps avoid unrelated matches
+                if abs(len(slim) - len(brand_norm)) > threshold + 2:
+                    continue
+                
+                if 0 < distance <= threshold:
                     match_type = 'lookalike'
-                    base_confidence = 0.75 + 0.05 * (max_distance - distance)
+                    base_confidence = 0.75 + 0.05 * (threshold - distance)
                     
                     # Path-based boost for auth paths
                     if path_flags.get('has_auth_path'):
@@ -350,6 +364,7 @@ class ReputationService:
                             'letters_count': len(letters_in_slim)
                         }
                     ))
+
         
         # Sort by distance, then confidence (descending)
         hits.sort(key=lambda r: (r['distance'], -r['confidence']))
@@ -519,8 +534,13 @@ class ReputationService:
         return re.sub(r'[^a-z0-9\-]', '', s)
 
     def _is_suspicious_tld(self, tld: str) -> bool:
-        """Use the loaded suspicious TLD list."""
-        return tld.lower().lstrip('.') in self.suspicious_tlds
+        """Enhanced suspicious TLD detection with fallback safety net."""
+        t = tld.lower().lstrip('.')
+        if t in self.suspicious_tlds:        # from JSON
+            return True
+        # fallback safety net if JSON misses entries
+        fallback = {'tk','ml','ga','cf','gq','xyz','info','top','click','loan','win','work'}
+        return t in fallback
 
     def _is_dictionary_word_brand(self, brand: str) -> bool:
         """Check if brand is a common dictionary word."""
