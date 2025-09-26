@@ -1583,6 +1583,7 @@ class SafeSignalBadgeEnhanced extends SafeSignalBadge {
     async checkIfPageChanged(trigger) {
         console.log('SafeSignal: Enhanced page check...', trigger);
         
+        // Guard: ensure probe exists
         if (!this.contextProbe) {
             this.contextProbe = new SafeSignalContextProbe();
         }
@@ -1593,14 +1594,18 @@ class SafeSignalBadgeEnhanced extends SafeSignalBadge {
             console.log('SafeSignal: URL changed to:', newUrl);
         }
 
+        // ✅ OPTIMIZATION: Only probe on important changes
         if (trigger === 'initial_load' || trigger === 'url_change' || trigger === 'content_mutation') {
             this.contextData = this.contextProbe.quickContextProbe();
             console.log('SafeSignal: Context detected:', this.contextData);
             this.updateContextButtons();
         }
 
+        // Delegate to base class
         return super.checkIfPageChanged?.(trigger);
     }
+
+    // === ADD ALL THESE MISSING METHODS ===
 
     updateContextButtons() {
         if (!this.contextData) return;
@@ -1870,6 +1875,7 @@ class SafeSignalBadgeEnhanced extends SafeSignalBadge {
         alert('Health fact-check temporarily unavailable. Please try again later.');
     }
     
+    // Override the destroy method to include context cleanup
     destroy() {
         try {
             this.removeContextButton('product');
