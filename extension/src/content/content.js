@@ -379,6 +379,133 @@ class SafeSignalBadgePositioning {
     }
 }
 
+class SafeSignalContextProbe {
+    constructor() {
+        this.productIndicators = {
+            priceRegex: /\$\d+(?:\.\d{2})?|\d+\.\d{2}\s*(?:USD|dollars?)|starting\s+at|sale\s+price|was\s+\$|now\s+\$/i,
+            shoppingTerms: ['add to cart', 'buy now', 'checkout', 'add to bag', 'purchase', 'order now', 'shop now'],
+            productCategories: ['supplement', 'vitamin', 'electronics', 'gadget', 'device', 'product', 'item'],
+            productSelectors: [
+                '[data-testid*="price"]', '[class*="price"]', '[id*="price"]',
+                '[data-testid*="cart"]', '[class*="cart"]', '[id*="cart"]',
+                'button[data-testid*="add"]', 'button[class*="add-to"]'
+            ]
+        };
+        
+        this.healthIndicators = {
+            medicalClaims: ['cures', 'prevents', 'treats', 'heals', 'miracle', 'breakthrough'],
+            healthTerms: ['supplement', 'natural remedy', 'clinical study', 'proven', 'FDA approved', 'doctor'],
+            suspiciousHealth: ['doctors hate this', 'miracle cure', 'secret remedy', 'big pharma'],
+            healthSelectors: [
+                '[class*="health"]', '[class*="medical"]', '[class*="supplement"]',
+                '[id*="health"]', '[id*="medical"]', '[id*="nutrition"]'
+            ]
+        };
+    }
+    
+    quickContextProbe() {
+        const pageText = this.getPageText();
+        const pageTitle = document.title || '';
+        
+        const productScore = this.calculateProductScore(pageText, pageTitle);
+        const healthScore = this.calculateHealthScore(pageText, pageTitle);
+        
+        return {
+            isProduct: productScore > 0.6,
+            isHealth: healthScore > 0.6,
+            productConfidence: productScore,
+            healthConfidence: healthScore,
+            hints: {
+                title: pageTitle.slice(0, 200),
+                priceText: this.extractPriceText(pageText),
+                productName: this.extractProductName(pageTitle, pageText),
+                claimsText: this.extractHealthClaims(pageText),
+                medicalTerms: this.extractMedicalTerms(pageText)
+            }
+        };
+    }
+    
+    getPageText() {
+        const mainSelectors = ['main', '[role="main"]', 'article', '.content', '#content'];
+        const mainContent = mainSelectors
+            .map(sel => document.querySelector(sel)?.textContent || '')
+            .find(text => text.length > 100) || document.body?.textContent || '';
+            
+        return mainContent.slice(0, 2000);
+    }
+    
+    calculateProductScore(text, title) {
+        let score = 0;
+        const fullText = (title + ' ' + text).toLowerCase();
+        
+        if (this.productIndicators.priceRegex.test(fullText)) {
+            score += 0.4;
+        }
+        
+        const shoppingMatches = this.productIndicators.shoppingTerms
+            .filter(term => fullText.includes(term)).length;
+        score += Math.min(shoppingMatches * 0.2, 0.4);
+        
+        const categoryMatches = this.productIndicators.productCategories
+            .filter(cat => fullText.includes(cat)).length;
+        score += Math.min(categoryMatches * 0.1, 0.3);
+        
+        const hasProductElements = this.productIndicators.productSelectors
+            .some(sel => document.querySelector(sel));
+        if (hasProductElements) score += 0.3;
+        
+        return Math.min(score, 1.0);
+    }
+    
+    calculateHealthScore(text, title) {
+        let score = 0;
+        const fullText = (title + ' ' + text).toLowerCase();
+        
+        const claimMatches = this.healthIndicators.medicalClaims
+            .filter(claim => fullText.includes(claim)).length;
+        score += Math.min(claimMatches * 0.3, 0.6);
+        
+        const healthMatches = this.healthIndicators.healthTerms
+            .filter(term => fullText.includes(term)).length;
+        score += Math.min(healthMatches * 0.2, 0.4);
+        
+        const suspiciousMatches = this.healthIndicators.suspiciousHealth
+            .filter(phrase => fullText.includes(phrase)).length;
+        const suspiciousWeight = suspiciousMatches > 0 ? 0.4 : 0;
+        score += suspiciousWeight;
+        
+        const hasHealthElements = this.healthIndicators.healthSelectors
+            .some(sel => document.querySelector(sel));
+        if (hasHealthElements) score += 0.2;
+        
+        return Math.min(score, 1.0);
+    }
+    
+    extractPriceText(text) {
+        const priceMatch = text.match(this.productIndicators.priceRegex);
+        return priceMatch ? priceMatch[0] : null;
+    }
+    
+    extractProductName(title, text) {
+        const titleWords = title.split(' ').slice(0, 4).join(' ');
+        return titleWords.length > 5 ? titleWords : null;
+    }
+    
+    extractHealthClaims(text) {
+        const sentences = text.split(/[.!?]/).slice(0, 10);
+        const claimSentences = sentences.filter(sentence => {
+            const lower = sentence.toLowerCase();
+            return this.healthIndicators.medicalClaims.some(claim => lower.includes(claim));
+        });
+        return claimSentences.slice(0, 3).join('. ');
+    }
+    
+    extractMedicalTerms(text) {
+        const found = this.healthIndicators.healthTerms
+            .filter(term => text.toLowerCase().includes(term));
+        return found.slice(0, 5).join(', ');
+    }
+}
 
 class SafeSignalBadge {
     constructor() {
@@ -410,7 +537,7 @@ class SafeSignalBadge {
         this.isMenuOpen = false;
         this.proximityCheckInterval = null;
         this.userPreferences = {
-            positioning: { anchor: 'bottom-right', offsetX: 0, offsetY: 0 },
+            positioning: { anchor: 'mid-right', offsetX: 0, offsetY: 0 },
             hiddenSites: new Set()
         };
         
@@ -552,42 +679,13 @@ class SafeSignalBadge {
 
     async loadUserPreferences() {
         try {
-            if (!chrome?.storage?.sync) {
-                console.warn('SafeSignal: Chrome storage not available, using defaults');
-                return;
+            const result = await chrome.storage.sync.get(['positioning']);
+            if (result.positioning) {
+                this.userPreferences.positioning = result.positioning;
             }
-            
-            const result = await chrome.storage.sync.get([
-                'safesignal_positioning',
-                'safesignal_hidden_sites',
-                'safesignal_positions' // Legacy key for migration
-            ]);
-            
-            const origin = this.getOriginKey();
-            
-            // Migrate old key if present
-            if (!result.safesignal_positioning?.[origin] && result.safesignal_positions?.[origin]) {
-                const anchor = result.safesignal_positions[origin];
-                const newPositioning = { 
-                    ...(result.safesignal_positioning || {}), 
-                    [origin]: { anchor, offsetX: 0, offsetY: 0 } 
-                };
-                await chrome.storage.sync.set({ 
-                    safesignal_positioning: newPositioning
-                });
-                console.log('SafeSignal: Migrated legacy position data for', origin);
-            }
-            
-            const positioningData = result.safesignal_positioning || {};
-            const hiddenSites = result.safesignal_hidden_sites || [];
-            
-            this.userPreferences.positioning = positioningData[origin] || 
-                { anchor: 'bottom-right', offsetX: 0, offsetY: 0 };
-            this.userPreferences.hiddenSites = new Set(hiddenSites);
-            
-            console.log('SafeSignal: Loaded preferences:', this.userPreferences);
-        } catch (e) {
-            console.warn('SafeSignal: Could not load preferences:', e);
+            // Remove all hide-related logic
+        } catch (error) {
+            console.error('SafeSignal: Error loading preferences:', error);
         }
     }
 
@@ -649,11 +747,6 @@ class SafeSignalBadge {
         } catch (e) {
             console.warn('SafeSignal: Could not toggle site visibility:', e);
         }
-    }
-
-    isSiteHidden() {
-        const origin = this.getOriginKey();
-        return this.userPreferences.hiddenSites.has(origin);
     }
 
     // === BADGE CREATION ===
@@ -765,69 +858,54 @@ class SafeSignalBadge {
                 
                 .badge-menu {
                     position: absolute;
-                    top: 100%;
-                    right: 0;
                     background: white;
-                    border-radius: 12px;
-                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15), 0 4px 16px rgba(0, 0, 0, 0.1);
+                    border: 1px solid #e1e5e9;
+                    border-radius: 8px;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
                     padding: 12px;
-                    min-width: 220px;
+                    min-width: 140px;
+                    z-index: 1000001;
                     opacity: 0;
-                    transform: translateY(-10px) scale(0.95);
-                    pointer-events: none;
-                    transition: all 0.2s ease;
-                    z-index: 1000002;
-                    border: 1px solid rgba(0, 0, 0, 0.08);
+                    visibility: hidden;
+                    transform: scale(0.9);
+                    transition: all 0.15s ease;
                 }
                 
                 .badge-menu.open {
                     opacity: 1;
-                    transform: translateY(0) scale(1);
-                    pointer-events: auto;
-                }
-                
-                .menu-section {
-                    margin-bottom: 12px;
-                }
-                
-                .menu-section:last-child {
-                    margin-bottom: 0;
+                    visibility: visible;
+                    transform: scale(1);
                 }
                 
                 .menu-label {
-                    font-size: 0.75rem;
+                    font-size: 12px;
                     font-weight: 600;
-                    color: #6b7280;
+                    color: #374151;
                     margin-bottom: 8px;
-                    text-transform: uppercase;
-                    letter-spacing: 0.05em;
+                    text-align: center;
                 }
                 
+                /* Position grid remains the same */
                 .position-grid {
                     display: grid;
-                    grid-template-columns: repeat(3, 1fr);
+                    grid-template-columns: 1fr 1fr 1fr;
                     gap: 6px;
-                    margin-bottom: 12px;
+                    margin-bottom: 8px;
                 }
                 
                 .position-option {
-                    width: 36px;
-                    height: 36px;
-                    border: 2px solid #e5e7eb;
-                    border-radius: 8px;
+                    width: 20px;
+                    height: 20px;
+                    border: 2px solid #d1d5db;
+                    border-radius: 4px;
                     background: #f9fafb;
                     cursor: pointer;
-                    position: relative;
                     transition: all 0.15s ease;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
                 }
                 
                 .position-option:hover {
                     border-color: #3b82f6;
                     background: #eff6ff;
-                    transform: scale(1.05);
                 }
                 
                 .position-option.active {
@@ -955,66 +1033,54 @@ class SafeSignalBadge {
                 }
             </style>
             
-            <div class="badge checking" 
-                 role="button" 
-                 tabindex="0"
-                 aria-label="SafeSignal security indicator"
-                 aria-live="polite"
-                 title="SafeSignal - Checking page safety">
+            <div class="badge" role="button" tabindex="0" aria-label="SafeSignal - Page safety indicator">
                 <span class="badge-icon">S</span>
                 <div class="badge-status" role="status" aria-live="polite">Checking...</div>
                 
                 <button class="menu-button" 
                         type="button"
-                        title="Badge options"
-                        aria-label="Open badge options menu"
+                        title="Move badge"
+                        aria-label="Move badge to different position"
                         aria-expanded="false">⋯</button>
                 
-                <div class="badge-menu" role="menu" aria-label="Badge options">
+                <div class="badge-menu" role="menu" aria-label="Badge position options">
                     <div class="menu-section">
-                        <div class="menu-label">Position</div>
-                        <div class="position-grid" role="group" aria-label="Badge position options">
+                        <div class="menu-label">Move Badge</div>
+                        <div class="position-grid" role="group" aria-label="Position options">
                             <button class="position-option" 
                                     data-position="top-left" 
                                     type="button"
                                     title="Top Left"
-                                    aria-label="Move badge to top left"></button>
+                                    aria-label="Top left corner"></button>
                             <div></div>
                             <button class="position-option" 
                                     data-position="top-right" 
                                     type="button"
                                     title="Top Right"
-                                    aria-label="Move badge to top right"></button>
+                                    aria-label="Top right corner"></button>
                             <button class="position-option" 
                                     data-position="mid-left" 
                                     type="button"
                                     title="Middle Left"
-                                    aria-label="Move badge to middle left"></button>
+                                    aria-label="Middle left side"></button>
                             <div></div>
-                            <button class="position-option" 
+                            <button class="position-option active" 
                                     data-position="mid-right" 
                                     type="button"
-                                    title="Middle Right"
-                                    aria-label="Move badge to middle right"></button>
+                                    title="Middle Right (Current)"
+                                    aria-label="Middle right side"></button>
                             <button class="position-option" 
                                     data-position="bottom-left" 
                                     type="button"
                                     title="Bottom Left"
-                                    aria-label="Move badge to bottom left"></button>
+                                    aria-label="Bottom left corner"></button>
                             <div></div>
-                            <button class="position-option active" 
+                            <button class="position-option" 
                                     data-position="bottom-right" 
                                     type="button"
                                     title="Bottom Right"
-                                    aria-label="Move badge to bottom right"></button>
+                                    aria-label="Bottom right corner"></button>
                         </div>
-                    </div>
-                    
-                    <div class="menu-section">
-                        <button class="menu-item danger" 
-                                type="button"
-                                role="menuitem"
-                                data-action="hide-site">Hide on this site</button>
                     </div>
                 </div>
             </div>
@@ -1267,69 +1333,24 @@ class SafeSignalBadge {
     // === MENU SYSTEM ===
 
     toggleMenu() {
-        console.log('[SafeSignal] menuButton clicked, opening=', !this.isMenuOpen);
-        console.log('[SafeSignal] positioning helper exists:', !!this.positioning);
-        console.log('[SafeSignal] applyMenuPosition method exists:', !!this.positioning?.applyMenuPosition);
-        
         this.isMenuOpen = !this.isMenuOpen;
-        const menu = this.shadowRoot.querySelector('.badge-menu');
         const badge = this.shadowRoot.querySelector('.badge');
         const menuButton = this.shadowRoot.querySelector('.menu-button');
+        const menu = this.shadowRoot.querySelector('.badge-menu');
         
         if (this.isMenuOpen) {
-            const badgeRect = badge.getBoundingClientRect();
-            
-            // Safety check before calling positioning helper
-            if (!this.positioning || !this.positioning.applyMenuPosition) {
-                console.error('[SafeSignal] Positioning helper not properly initialized');
-                // Fallback: simple positioning
-                menu.style.position = 'fixed';
-                menu.style.left = `${badgeRect.right + 8}px`;
-                menu.style.top = `${badgeRect.bottom + 8}px`;
-                menu.classList.add('open');
-            } else {
-                // Apply smart positioning using the helper
-                this.positioning.applyMenuPosition(menu, badgeRect);
-            }
-            
             badge.classList.add('menu-open');
             menuButton.setAttribute('aria-expanded', 'true');
+            menu.classList.add('open');
             
-            // Focus first interactive element
-            const activeMenu = this.positioning?.activeMenuEl || menu;
-            const firstButton = activeMenu.querySelector('.menu-item, .position-option');
-            if (firstButton) firstButton.focus();
-            
-            // Re-measure and adjust after layout settles
-            requestAnimationFrame(() => {
-                const activeMenu = this.positioning?.activeMenuEl || menu;
-                const menuRect = activeMenu.getBoundingClientRect();
-                const vw = window.visualViewport?.width || window.innerWidth;
-                const vh = window.visualViewport?.height || window.innerHeight;
-                
-                console.log('[SafeSignal] Menu positioned at:', {
-                    left: activeMenu.style.left,
-                    top: activeMenu.style.top,
-                    position: activeMenu.style.position,
-                    visible: menuRect.width > 0 && menuRect.height > 0,
-                    rect: menuRect
-                });
-                
-                // Final bounds check and adjustment
-                if (this.positioning && (menuRect.right > vw - 16 || menuRect.bottom > vh - 16)) {
-                    console.log('SafeSignal: Menu overflow detected, adjusting...');
-                    this.positioning.applyMenuPosition(activeMenu, badgeRect);
+            // Auto-close after 5 seconds for simplicity
+            setTimeout(() => {
+                if (this.isMenuOpen) {
+                    this.closeMenu();
                 }
-            });
+            }, 5000);
         } else {
-            if (this.positioning && this.positioning.closeMenu) {
-                this.positioning.closeMenu();
-            } else {
-                menu.classList.remove('open');
-            }
-            badge.classList.remove('menu-open');
-            menuButton.setAttribute('aria-expanded', 'false');
-            menuButton.focus();
+            this.closeMenu();
         }
     }
 
@@ -1358,36 +1379,23 @@ class SafeSignalBadge {
         const badge = this.shadowRoot.querySelector('.badge');
         
         const friendlyNames = {
-            'bottom-right': 'Bottom Right',
-            'bottom-left': 'Bottom Left', 
+            'mid-right': 'Middle Right',
+            'mid-left': 'Middle Left',
             'top-right': 'Top Right',
             'top-left': 'Top Left',
-            'mid-right': 'Middle Right',
-            'mid-left': 'Middle Left'
+            'bottom-right': 'Bottom Right',
+            'bottom-left': 'Bottom Left'
         };
         
         statusEl.textContent = `Moved to ${friendlyNames[anchor]}`;
-        
-        // Update status bubble position before showing
-        this.updateStatusBubblePosition();
         
         badge.classList.add('show-status');
         
         setTimeout(() => {
             badge.classList.remove('show-status');
+            // Return to current safety status
+            this.updateBadgeState(this.currentState);
         }, 2000);
-    }
-
-    hide() {
-        const badge = this.shadowRoot.querySelector('.badge');
-        badge.classList.add('hidden');
-        this.isVisible = false;
-    }
-
-    show() {
-        const badge = this.shadowRoot.querySelector('.badge');
-        badge.classList.remove('hidden');
-        this.isVisible = true;
     }
 
     // === SIMPLIFIED SPA DETECTION ===
@@ -1564,6 +1572,315 @@ class SafeSignalBadge {
     }
 }
 
+class SafeSignalBadgeEnhanced extends SafeSignalBadge {
+    constructor() {
+        super();
+        this.contextProbe = new SafeSignalContextProbe();
+        this.contextData = null;
+        this.showingContextButtons = false;
+    }
+    
+    async checkIfPageChanged(trigger) {
+        console.log('SafeSignal: Enhanced page check...', trigger);
+        
+        if (!this.contextProbe) {
+            this.contextProbe = new SafeSignalContextProbe();
+        }
+        
+        const newUrl = window.location.href;
+        if (newUrl !== this.currentUrl) {
+            this.currentUrl = newUrl;
+            console.log('SafeSignal: URL changed to:', newUrl);
+        }
+
+        if (trigger === 'initial_load' || trigger === 'url_change' || trigger === 'content_mutation') {
+            this.contextData = this.contextProbe.quickContextProbe();
+            console.log('SafeSignal: Context detected:', this.contextData);
+            this.updateContextButtons();
+        }
+
+        return super.checkIfPageChanged?.(trigger);
+    }
+
+    updateContextButtons() {
+        if (!this.contextData) return;
+        
+        const badge = this.shadowRoot?.querySelector('.badge');
+        if (!badge) {
+            requestAnimationFrame(() => this.updateContextButtons());
+            return;
+        }
+        
+        const { isProduct, isHealth, productConfidence, healthConfidence } = this.contextData;
+        
+        if (isProduct && productConfidence > 0.7) {
+            this.addContextButton('product', 'Find Safer Deals', '🛍️');
+        } else {
+            this.removeContextButton('product');
+        }
+        
+        if (isHealth && healthConfidence > 0.7) {
+            this.addContextButton('health', 'Health Fact Check', '⚕️');
+        } else {
+            this.removeContextButton('health');
+        }
+    }
+
+    addContextButton(type, label, icon) {
+        this.removeContextButton(type);
+        
+        const badge = this.shadowRoot.querySelector('.badge');
+        if (!badge) return;
+        
+        const button = document.createElement('button');
+        button.className = `context-button context-${type}`;
+        button.type = 'button';
+        button.setAttribute('data-context-type', type);
+        button.setAttribute('title', label);
+        button.setAttribute('aria-label', label);
+        button.setAttribute('tabindex', '0');
+        
+        button.innerHTML = `
+            <span class="context-icon">${icon}</span>
+            <span class="context-label">${label}</span>
+        `;
+        
+        button.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.handleContextButtonClick(type);
+        });
+        
+        button.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                this.handleContextButtonClick(type);
+            }
+        });
+        
+        button.addEventListener('mouseenter', () => {
+            this.adjustButtonPlacement(button, type === 'product' ? 80 : 40);
+        });
+        
+        badge.appendChild(button);
+        this.showingContextButtons = true;
+        this.addContextButtonStyles();
+    }
+    
+    adjustButtonPlacement(button, offsetDefault) {
+        const hostRect = this.shadowRoot.host?.getBoundingClientRect?.() ?? { top: 200 };
+        const placeAbove = hostRect.top > 120;
+        
+        if (placeAbove) {
+            button.style.top = `${-offsetDefault}px`;
+        } else {
+            button.style.top = `calc(100% + ${offsetDefault - 40}px)`;
+        }
+    }
+
+    removeContextButton(type) {
+        const existing = this.shadowRoot?.querySelector(`[data-context-type="${type}"]`);
+        if (existing) {
+            existing.remove();
+        }
+    }
+
+    addContextButtonStyles() {
+        const style = this.shadowRoot?.querySelector('style');
+        if (style && !style.textContent.includes('.context-button')) {
+            style.textContent += `
+                .context-button {
+                    position: absolute;
+                    top: -40px;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    background: #3b82f6;
+                    color: white;
+                    border: none;
+                    border-radius: 20px;
+                    padding: 6px 12px;
+                    font-size: 11px;
+                    font-weight: 500;
+                    cursor: pointer;
+                    transition: all 0.2s ease;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+                    white-space: nowrap;
+                    opacity: 0;
+                    animation: slideInContext 0.3s ease forwards;
+                }
+                
+                .context-button:hover {
+                    background: #2563eb;
+                    transform: translateX(-50%) translateY(-2px);
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+                }
+                
+                .context-button:focus {
+                    outline: 2px solid #60a5fa;
+                    outline-offset: 2px;
+                }
+                
+                .context-button.context-health {
+                    background: #059669;
+                    top: -40px;
+                }
+                
+                .context-button.context-health:hover {
+                    background: #047857;
+                }
+                
+                .context-button.context-product {
+                    background: #dc2626;
+                    top: -80px;
+                }
+                
+                .context-button.context-product:hover {
+                    background: #b91c1c;
+                }
+                
+                .context-icon {
+                    margin-right: 4px;
+                    font-size: 12px;
+                }
+                
+                .context-label {
+                    font-size: 11px;
+                    font-weight: 500;
+                }
+                
+                @keyframes slideInContext {
+                    from {
+                        opacity: 0;
+                        transform: translateX(-50%) translateY(10px);
+                    }
+                    to {
+                        opacity: 1;
+                        transform: translateX(-50%) translateY(0);
+                    }
+                }
+                
+                .badge.menu-open .context-button {
+                    opacity: 0;
+                    pointer-events: none;
+                }
+            `;
+        }
+    }
+
+    handleContextButtonClick(type) {
+        console.log(`SafeSignal: Context button clicked: ${type}`);
+        
+        if (type === 'product') {
+            this.handleProductScan();
+        } else if (type === 'health') {
+            this.handleHealthScan();
+        }
+    }
+
+    async handleProductScan() {
+        console.log('SafeSignal: Starting product scan...', this.contextData.hints);
+        
+        const button = this.shadowRoot.querySelector('[data-context-type="product"]');
+        if (button) {
+            button.innerHTML = '<span class="context-icon">⏳</span><span class="context-label">Scanning...</span>';
+        }
+        
+        try {
+            const response = await chrome.runtime.sendMessage({
+                type: 'apiFetch',
+                path: '/api/scan/product',
+                body: {
+                    url: window.location.href,
+                    hints: this.contextData.hints
+                }
+            });
+            
+            if (response?.ok) {
+                this.showProductResults(response.data);
+            } else {
+                throw new Error(`API error: ${response?.status || 'unknown'}`);
+            }
+            
+        } catch (error) {
+            console.error('SafeSignal: Product scan failed:', error);
+            this.showProductFallback();
+        }
+        
+        if (button) {
+            button.innerHTML = '<span class="context-icon">🛍️</span><span class="context-label">Find Safer Deals</span>';
+        }
+    }
+
+    async handleHealthScan() {
+        console.log('SafeSignal: Starting health scan...', this.contextData.hints);
+        
+        const button = this.shadowRoot.querySelector('[data-context-type="health"]');
+        if (button) {
+            button.innerHTML = '<span class="context-icon">⏳</span><span class="context-label">Checking...</span>';
+        }
+        
+        try {
+            const response = await chrome.runtime.sendMessage({
+                type: 'apiFetch',
+                path: '/api/scan/health',
+                body: {
+                    url: window.location.href,
+                    hints: this.contextData.hints
+                }
+            });
+            
+            if (response?.ok) {
+                this.showHealthResults(response.data);
+            } else {
+                throw new Error(`API error: ${response?.status || 'unknown'}`);
+            }
+            
+        } catch (error) {
+            console.error('SafeSignal: Health scan failed:', error);
+            this.showHealthFallback();
+        }
+        
+        if (button) {
+            button.innerHTML = '<span class="context-icon">⚕️</span><span class="context-label">Health Fact Check</span>';
+        }
+    }
+    
+    showProductResults(result) {
+        console.log('SafeSignal: Product results:', result);
+        const message = `Product Analysis Complete!\n\n` +
+            `Detected: ${this.contextData?.hints?.productName || 'Product'}\n` +
+            `Price: ${this.contextData?.hints?.priceText || 'Not found'}\n` +
+            `Confidence: ${(this.contextData?.productConfidence * 100).toFixed(0)}%`;
+        alert(message);
+    }
+    
+    showHealthResults(result) {
+        console.log('SafeSignal: Health results:', result);
+        const message = `Health Fact-Check Complete!\n\n` +
+            `Claims: ${this.contextData?.hints?.claimsText || 'None detected'}\n` +
+            `Medical terms: ${this.contextData?.hints?.medicalTerms || 'None'}\n` +
+            `Confidence: ${(this.contextData?.healthConfidence * 100).toFixed(0)}%`;
+        alert(message);
+    }
+    
+    showProductFallback() {
+        alert('Product scan temporarily unavailable. Please try again later.');
+    }
+    
+    showHealthFallback() {
+        alert('Health fact-check temporarily unavailable. Please try again later.');
+    }
+    
+    destroy() {
+        try {
+            this.removeContextButton('product');
+            this.removeContextButton('health');
+        } catch(e) {
+            console.warn('SafeSignal: Error during context cleanup:', e);
+        }
+        super.destroy?.();
+    }
+}
+
 // Initialize badge when DOM is ready
 let safesignalBadge = null;
 
@@ -1572,7 +1889,7 @@ async function initializeBadge() {
         safesignalBadge.destroy();
     }
     
-    safesignalBadge = new SafeSignalBadge();
+    safesignalBadge = new SafeSignalBadgeEnhanced();
 }
 
 if (document.readyState === 'loading') {
@@ -1588,5 +1905,5 @@ window.addEventListener('beforeunload', () => {
 });
 
 if (typeof window !== 'undefined') {
-    window.SafeSignalBadge = SafeSignalBadge;
+    window.SafeSignalBadge = SafeSignalBadgeEnhanced;
 }
