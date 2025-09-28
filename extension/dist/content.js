@@ -1,411 +1,30 @@
 /******/ (() => { // webpackBootstrap
-class SafeSignalBadgePositioning {
-    constructor(shadowRoot) {
-        this.shadowRoot = shadowRoot;
-        this.SAFE_MARGIN = 16;
-        this.GAP = 8; // Gap between badge and menu
-        this.topLayerContainer = null;
-        this.activeMenuEl = null; // Track which menu is currently active
-    }
+// SafeSignal Content Script - Enhanced Badge Implementation
+// Injects a floating badge on web pages to show safety status
 
-    // Create top-layer container for menu to escape clipping
-    createTopLayerContainer() {
-        if (this.topLayerContainer) return this.topLayerContainer;
-        
-        this.topLayerContainer = document.createElement('div');
-        this.topLayerContainer.id = 'safesignal-menu-portal';
-        this.topLayerContainer.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            z-index: 2147483647;
-            pointer-events: none;
-            width: 100vw;
-            height: 100vh;
-        `;
-        
-        // Append to documentElement to escape any body transforms
-        document.documentElement.appendChild(this.topLayerContainer);
-        return this.topLayerContainer;
-    }
-
-    // Move menu to top layer when opening (don't clone, move the actual element)
-    moveMenuToTopLayer(menu) {
-        const container = this.createTopLayerContainer();
-        
-        // Store original parent for restoration
-        menu._originalParent = menu.parentNode;
-        menu._originalNextSibling = menu.nextSibling;
-        
-        // Move to top layer
-        container.appendChild(menu);
-        
-        // Inject CSS into the portal container to maintain styles (guard against duplicates)
-        if (!this._portalStyleInjected) {
-            const style = document.createElement('style');
-            style.textContent = `
-                .badge-menu {
-                    position: fixed;
-                    pointer-events: none;
-                    background: white;
-                    border-radius: 12px;
-                    box-shadow: 0 8px 32px rgba(0,0,0,.15), 0 4px 16px rgba(0,0,0,.1);
-                    border: 1px solid rgba(0,0,0,.08);
-                    padding: 12px;
-                    min-width: 220px;
-                    max-height: calc(100vh - 32px);
-                    overflow-y: auto;
-                    box-sizing: border-box;
-                    /* CLOSED baseline */
-                    opacity: 0;
-                    transform: translateY(-10px) scale(0.95);
-                    z-index: auto;
-                }
-                
-                .badge-menu.open {
-                    /* OPEN state */
-                    opacity: 1;
-                    transform: none;
-                    pointer-events: auto;
-                }
-                
-                .menu-section {
-                    margin-bottom: 12px;
-                }
-                
-                .menu-section:last-child {
-                    margin-bottom: 0;
-                }
-                
-                .menu-label {
-                    font-size: 0.75rem;
-                    font-weight: 600;
-                    color: #6b7280;
-                    margin-bottom: 8px;
-                    text-transform: uppercase;
-                    letter-spacing: 0.05em;
-                }
-                
-                .position-grid {
-                    display: grid;
-                    grid-template-columns: repeat(3, 1fr);
-                    gap: 6px;
-                    margin-bottom: 12px;
-                }
-                
-                .position-option {
-                    width: 36px;
-                    height: 36px;
-                    border: 2px solid #e5e7eb;
-                    border-radius: 8px;
-                    background: #f9fafb;
-                    cursor: pointer;
-                    position: relative;
-                    transition: all 0.15s ease;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                }
-                
-                .position-option:hover {
-                    border-color: #3b82f6;
-                    background: #eff6ff;
-                    transform: scale(1.05);
-                }
-                
-                .position-option.active {
-                    border-color: #3b82f6;
-                    background: #3b82f6;
-                }
-                
-                .position-option::after {
-                    content: '';
-                    position: absolute;
-                    width: 8px;
-                    height: 8px;
-                    background: #6b7280;
-                    border-radius: 50%;
-                    transition: background 0.15s ease;
-                }
-                
-                .position-option.active::after {
-                    background: white;
-                }
-                
-                .position-option[data-position="top-left"]::after {
-                    top: 6px;
-                    left: 6px;
-                }
-                
-                .position-option[data-position="top-right"]::after {
-                    top: 6px;
-                    right: 6px;
-                }
-                
-                .position-option[data-position="mid-left"]::after {
-                    top: 50%;
-                    left: 6px;
-                    transform: translateY(-50%);
-                }
-                
-                .position-option[data-position="mid-right"]::after {
-                    top: 50%;
-                    right: 6px;
-                    transform: translateY(-50%);
-                }
-                
-                .position-option[data-position="bottom-left"]::after {
-                    bottom: 6px;
-                    left: 6px;
-                }
-                
-                .position-option[data-position="bottom-right"]::after {
-                    bottom: 6px;
-                    right: 6px;
-                }
-                
-                .menu-item {
-                    width: 100%;
-                    padding: 10px 14px;
-                    border: none;
-                    background: #f9fafb;
-                    color: #374151;
-                    font-size: 0.875rem;
-                    border-radius: 8px;
-                    cursor: pointer;
-                    transition: all 0.15s ease;
-                    text-align: left;
-                    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-                }
-                
-                .menu-item:hover {
-                    background: #f3f4f6;
-                    color: #111827;
-                    transform: translateY(-1px);
-                }
-                
-                .menu-item.danger {
-                    color: #dc2626;
-                }
-                
-                .menu-item.danger:hover {
-                    background: #fef2f2;
-                    color: #991b1b;
-                }
-                
-                .menu--above { 
-                    transform-origin: bottom center; 
-                }
-                
-                .menu--left { 
-                    transform-origin: top right; 
-                }
-            `;
-            container.appendChild(style);
-            this._portalStyleInjected = true;
-        }
-        
-        this.activeMenuEl = menu;
-        return menu;
-    }
-
-    // Restore menu to original position
-    restoreMenuToShadow(menu) {
-        if (menu._originalParent) {
-            if (menu._originalNextSibling) {
-                menu._originalParent.insertBefore(menu, menu._originalNextSibling);
-            } else {
-                menu._originalParent.appendChild(menu);
-            }
-            delete menu._originalParent;
-            delete menu._originalNextSibling;
-        }
-        this.activeMenuEl = null;
-    }
-
-    // Calculate smart menu placement with gap
-    calculateMenuPlacement(badgeRect, menuRect) {
-        const vw = window.visualViewport?.width || window.innerWidth;
-        const vh = window.visualViewport?.height || window.innerHeight;
-        const margin = this.SAFE_MARGIN;
-        const gap = this.GAP;
-        
-        let placement = {
-            x: badgeRect.right + gap,
-            y: badgeRect.bottom + gap,
-            anchorX: 'right',
-            anchorY: 'below',
-            classes: []
-        };
-        
-        // Vertical placement - flip if would overflow bottom
-        if (badgeRect.bottom + gap + menuRect.height > vh - margin) {
-            placement.y = badgeRect.top - gap - menuRect.height;
-            placement.anchorY = 'above';
-            placement.classes.push('menu--above');
-        }
-        
-        // Horizontal placement - flip if would overflow right
-        if (badgeRect.right + gap + menuRect.width > vw - margin) {
-            placement.x = badgeRect.left - gap - menuRect.width;
-            placement.anchorX = 'left';
-            placement.classes.push('menu--left');
-        }
-        
-        // Clamp to safe bounds
-        placement.x = Math.max(margin, Math.min(placement.x, vw - menuRect.width - margin));
-        placement.y = Math.max(margin, Math.min(placement.y, vh - menuRect.height - margin));
-        
-        // Fallback: center on screen if still doesn't fit
-        if (menuRect.width > vw - margin * 2 || menuRect.height > vh - margin * 2) {
-            placement.x = (vw - menuRect.width) / 2;
-            placement.y = (vh - menuRect.height) / 2;
-            placement.classes.push('menu--centered');
-        }
-        
-        return placement;
-    }
-
-    // Check if we need to portal (body has transforms or overflow issues)
-    shouldPortal() {
-        const bodyStyle = getComputedStyle(document.body);
-        return bodyStyle.transform !== 'none' || 
-               bodyStyle.overflow !== 'visible' ||
-               bodyStyle.position === 'fixed';
-    }
-
-    // Apply menu positioning
-    applyMenuPosition(menu, badgeRect) {
-        // First, move to top layer (force for now while debugging)
-        let targetMenu = this.moveMenuToTopLayer(menu);
-        
-        // Always position against the viewport, even when not portaled
-        targetMenu.style.position = 'fixed';
-        targetMenu.style.right = 'auto';
-        targetMenu.style.bottom = 'auto';
-        
-        // Make visible but transparent for measurement
-        targetMenu.style.opacity = '0';
-        targetMenu.style.pointerEvents = 'none';
-        targetMenu.classList.add('measuring');
-        targetMenu.classList.add('open'); // Add open class for proper size
-        
-        // Measure after it's in the right container
-        const menuRect = targetMenu.getBoundingClientRect();
-        const placement = this.calculateMenuPlacement(badgeRect, menuRect);
-        
-        // Apply positioning
-        targetMenu.style.left = `${placement.x}px`;
-        targetMenu.style.top = `${placement.y}px`;
-        targetMenu.style.maxHeight = `calc(100vh - ${this.SAFE_MARGIN * 2}px)`;
-        targetMenu.style.overflowY = 'auto';
-        
-        // Apply placement classes
-        targetMenu.classList.remove('measuring');
-        placement.classes.forEach(cls => targetMenu.classList.add(cls));
-        
-        // Force visibility explicitly
-        targetMenu.style.opacity = '1';
-        targetMenu.style.pointerEvents = 'auto';
-        
-        // Store reference to active menu
-        this.activeMenuEl = targetMenu;
-        
-        // Re-attach event handlers since this was moved to portal
-        this.reattachMenuEventHandlers(targetMenu);
-        
-        return targetMenu;
-    }
-
-    // Re-attach event handlers to portaled menu
-    reattachMenuEventHandlers(portaledMenu) {
-        // Prevent clicks from closing menu
-        portaledMenu.addEventListener('click', (e) => {
-            e.stopPropagation();
-        });
-        
-        // Re-attach position option handlers
-        const positionOptions = portaledMenu.querySelectorAll('.position-option');
-        positionOptions.forEach(option => {
-            option.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const anchor = option.dataset.position;
-                // Trigger custom event that badge can listen for
-                document.dispatchEvent(new CustomEvent('safesignal-position-select', {
-                    detail: { anchor }
-                }));
-            });
-        });
-        
-        // Re-attach hide site handler
-        const hideSiteButton = portaledMenu.querySelector('[data-action="hide-site"]');
-        if (hideSiteButton) {
-            hideSiteButton.addEventListener('click', (e) => {
-                e.stopPropagation();
-                document.dispatchEvent(new CustomEvent('safesignal-hide-site'));
-            });
-        }
-    }
-
-    // Close and clean up menu
-    closeMenu() {
-        if (this.activeMenuEl) {
-            console.log('[SafeSignal] Closing menu:', this.activeMenuEl);
-            
-            // Remove all menu state classes and hide
-            this.activeMenuEl.classList.remove('open', 'menu--above', 'menu--left', 'menu--centered');
-            this.activeMenuEl.style.opacity = '0';
-            this.activeMenuEl.style.pointerEvents = 'none';
-            
-            // If it was portaled, restore it to shadow DOM
-            if (this.activeMenuEl.parentNode === this.topLayerContainer) {
-                this.restoreMenuToShadow(this.activeMenuEl);
-            }
-            
-            this.activeMenuEl = null;
-        }
-    }
-
-    // Cleanup portaled elements
-    cleanup() {
-        if (this.activeMenuEl && this.activeMenuEl.parentNode === this.topLayerContainer) {
-            this.restoreMenuToShadow(this.activeMenuEl);
-        }
-        
-        if (this.topLayerContainer && this.topLayerContainer.parentNode) {
-            this.topLayerContainer.parentNode.removeChild(this.topLayerContainer);
-        }
-        this.topLayerContainer = null;
-        this.activeMenuEl = null;
-    }
-}
-
+// ---- VERSION STAMP FOR DEBUGGING ----
+const SAFESIGNAL_BUILD = 'content-2025-09-28-16:45'; // bump each build
+console.info('[SafeSignal] build:', SAFESIGNAL_BUILD);
 
 class SafeSignalBadge {
     constructor() {
         this.shadowRoot = null;
         this.badgeContainer = null;
         this.currentState = 'checking';
-        this.isVisible = true;
-        
-        // Separate positioning state from positioning helper
-        this.positionState = {
-            anchor: 'bottom-right',
-            offsetX: 0,
-            offsetY: 0
-        };
+        this.positionState = { anchor: 'bottom-right', offsetX: 0, offsetY: 0 };
         
         // Positioning helper (will be initialized after shadow root)
         this.positioning = null;
         
-        // SPA Detection properties (simplified)
+        // SPA Detection properties
         this.currentUrl = window.location.href;
         this.currentSignature = null;
         this.mutationObserver = null;
         this.pageDebounceTimer = null;
-        this.lastCheck = 0;
+        this.lastCheckByUrl = new Map(); // Per-URL cooldown tracking
         this.checkCooldown = 30 * 60 * 1000; // 30 minutes
         this.cleanupHandlers = [];
+        this.pageHidden = false;
         
         // UI state
         this.isMenuOpen = false;
@@ -440,9 +59,12 @@ class SafeSignalBadge {
         // Apply saved positioning
         this.applyPositioning(this.userPreferences.positioning);
         
+        // Position status bubble correctly on first paint
+        this.updateStatusBubblePosition();
+        
         this.checkIfPageChanged('initial_load');
         
-        console.log('SafeSignal: Enhanced badge active (simplified)');
+        console.log('SafeSignal: Badge active');
     }
 
     shouldSkipInjection() {
@@ -553,102 +175,60 @@ class SafeSignalBadge {
 
     async loadUserPreferences() {
         try {
-            if (!chrome?.storage?.sync) {
-                console.warn('SafeSignal: Chrome storage not available, using defaults');
+            const origin = this.getOriginKey();
+            
+            // Safe cross-browser storage check with runtime validation
+            const storage =
+                (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id && chrome.storage?.sync) ||
+                (typeof browser !== 'undefined' && browser.storage?.sync);
+            
+            if (!storage) {
+                console.warn('SafeSignal: Browser storage not available or extension context invalidated');
                 return;
             }
             
-            const result = await chrome.storage.sync.get([
-                'safesignal_positioning',
-                'safesignal_hidden_sites',
-                'safesignal_positions' // Legacy key for migration
-            ]);
-            
-            const origin = this.getOriginKey();
-            
-            // Migrate old key if present
-            if (!result.safesignal_positioning?.[origin] && result.safesignal_positions?.[origin]) {
-                const anchor = result.safesignal_positions[origin];
-                const newPositioning = { 
-                    ...(result.safesignal_positioning || {}), 
-                    [origin]: { anchor, offsetX: 0, offsetY: 0 } 
-                };
-                await chrome.storage.sync.set({ 
-                    safesignal_positioning: newPositioning
-                });
-                console.log('SafeSignal: Migrated legacy position data for', origin);
-            }
+            const result = await storage.get(['safesignal_positioning', 'safesignal_hidden_sites']);
             
             const positioningData = result.safesignal_positioning || {};
-            const hiddenSites = result.safesignal_hidden_sites || [];
+            if (positioningData[origin]) {
+                this.userPreferences.positioning = positioningData[origin];
+            }
             
-            this.userPreferences.positioning = positioningData[origin] || 
-                { anchor: 'bottom-right', offsetX: 0, offsetY: 0 };
-            this.userPreferences.hiddenSites = new Set(hiddenSites);
+            const hiddenSites = new Set(result.safesignal_hidden_sites || []);
+            this.userPreferences.hiddenSites = hiddenSites;
             
             console.log('SafeSignal: Loaded preferences:', this.userPreferences);
         } catch (e) {
-            console.warn('SafeSignal: Could not load preferences:', e);
+            console.warn('SafeSignal: Could not load preferences (extension context may be invalidated):', e);
         }
     }
 
     async savePositioningPreference(positioning) {
         try {
-            if (!chrome?.storage?.sync) {
-                console.warn('SafeSignal: Chrome storage not available');
+            // Safe cross-browser storage check with runtime validation
+            const storage =
+                (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id && chrome.storage?.sync) ||
+                (typeof browser !== 'undefined' && browser.storage?.sync);
+            
+            if (!storage) {
+                console.warn('SafeSignal: Browser storage not available or extension context invalidated');
                 return;
             }
             
-            const result = await chrome.storage.sync.get(['safesignal_positioning']);
+            const result = await storage.get(['safesignal_positioning']);
             const positioningData = result.safesignal_positioning || {};
             
             const origin = this.getOriginKey();
             positioningData[origin] = positioning;
             
-            await chrome.storage.sync.set({
+            await storage.set({
                 safesignal_positioning: positioningData
             });
             
             this.userPreferences.positioning = positioning;
             console.log('SafeSignal: Saved positioning preference:', positioning, 'for', origin);
         } catch (e) {
-            console.warn('SafeSignal: Could not save positioning preference:', e);
-        }
-    }
-
-    async toggleSiteVisibility() {
-        try {
-            if (!chrome?.storage?.sync) {
-                console.warn('SafeSignal: Chrome storage not available');
-                return;
-            }
-            
-            const origin = this.getOriginKey();
-            const result = await chrome.storage.sync.get(['safesignal_hidden_sites']);
-            const hiddenSites = new Set(result.safesignal_hidden_sites || []);
-            
-            if (hiddenSites.has(origin)) {
-                hiddenSites.delete(origin);
-                await chrome.storage.sync.set({
-                    safesignal_hidden_sites: Array.from(hiddenSites)
-                });
-                
-                console.log('SafeSignal: Unhidden site:', origin);
-                this.show();
-            } else {
-                hiddenSites.add(origin);
-                await chrome.storage.sync.set({
-                    safesignal_hidden_sites: Array.from(hiddenSites)
-                });
-                
-                console.log('SafeSignal: Hidden site:', origin);
-                this.hide();
-                setTimeout(() => this.destroy(), 100);
-            }
-            
-            this.userPreferences.hiddenSites = hiddenSites;
-        } catch (e) {
-            console.warn('SafeSignal: Could not toggle site visibility:', e);
+            console.warn('SafeSignal: Could not save positioning preference (extension context may be invalidated):', e);
         }
     }
 
@@ -663,6 +243,7 @@ class SafeSignalBadge {
         // Mount to documentElement to avoid body transform issues
         this.badgeContainer = document.createElement('div');
         this.badgeContainer.id = 'safesignal-badge-container';
+        this.badgeContainer.setAttribute('data-safesignal-build', SAFESIGNAL_BUILD); // Debug stamp
         this.shadowRoot = this.badgeContainer.attachShadow({ mode: 'open' });
         
         this.shadowRoot.innerHTML = `
@@ -691,6 +272,46 @@ class SafeSignalBadge {
                     touch-action: manipulation;
                 }
                 
+                .badge:hover {
+                    transform: scale(1.05);
+                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2), 0 2px 6px rgba(0, 0, 0, 0.15);
+                }
+                
+                .badge.checking {
+                    background: linear-gradient(135deg, #6b7280 0%, #9ca3af 100%);
+                    color: white;
+                    animation: pulse 2s infinite;
+                }
+                
+                .badge.ok {
+                    background: linear-gradient(135deg, #10b981 0%, #34d399 100%);
+                    color: white;
+                }
+                
+                .badge.warning {
+                    background: linear-gradient(135deg, #f59e0b 0%, #fbbf24 100%);
+                    color: white;
+                }
+                
+                .badge.danger {
+                    background: linear-gradient(135deg, #ef4444 0%, #f87171 100%);
+                    color: white;
+                }
+                
+                @keyframes pulse {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: 0.7; }
+                }
+                
+                .badge:focus {
+                    outline: 3px solid #3b82f6;
+                    outline-offset: 2px;
+                }
+                
+                .badge.hidden {
+                    display: none;
+                }
+                
                 @media (prefers-reduced-motion: reduce) {
                     .badge {
                         transition: none;
@@ -707,7 +328,6 @@ class SafeSignalBadge {
                     padding: 8px 12px;
                     border-radius: 8px;
                     font-size: 0.75rem;
-                    white-space: nowrap;
                     pointer-events: none;
                     opacity: 0;
                     transition: opacity 0.2s ease;
@@ -765,30 +385,28 @@ class SafeSignalBadge {
                 }
                 
                 .badge-menu {
-                    position: absolute;
-                    top: 100%;
-                    right: 0;
+                    position: fixed;
                     background: white;
-                    border-radius: 12px;
-                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15), 0 4px 16px rgba(0, 0, 0, 0.1);
+                    border: 1px solid #e1e5e9;
+                    border-radius: 8px;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
                     padding: 12px;
-                    min-width: 220px;
+                    min-width: 140px;
+                    z-index: 2147483646;
+                    contain: paint;
                     opacity: 0;
-                    transform: translateY(-10px) scale(0.95);
-                    pointer-events: none;
-                    transition: all 0.2s ease;
-                    z-index: 1000002;
-                    border: 1px solid rgba(0, 0, 0, 0.08);
+                    visibility: hidden;
+                    transition: opacity 0.2s ease, visibility 0.2s ease;
+                    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
                 }
                 
-                .badge-menu.open {
+                .badge-menu.show {
                     opacity: 1;
-                    transform: translateY(0) scale(1);
-                    pointer-events: auto;
+                    visibility: visible;
                 }
                 
                 .menu-section {
-                    margin-bottom: 12px;
+                    margin-bottom: 8px;
                 }
                 
                 .menu-section:last-child {
@@ -799,107 +417,54 @@ class SafeSignalBadge {
                     font-size: 0.75rem;
                     font-weight: 600;
                     color: #6b7280;
-                    margin-bottom: 8px;
+                    margin-bottom: 6px;
                     text-transform: uppercase;
-                    letter-spacing: 0.05em;
+                    letter-spacing: 0.025em;
                 }
                 
                 .position-grid {
                     display: grid;
                     grid-template-columns: repeat(3, 1fr);
-                    gap: 6px;
-                    margin-bottom: 12px;
+                    gap: 4px;
+                    width: 60px;
+                    height: 48px;
                 }
                 
                 .position-option {
-                    width: 36px;
-                    height: 36px;
-                    border: 2px solid #e5e7eb;
-                    border-radius: 8px;
+                    width: 16px;
+                    height: 12px;
+                    border: 1px solid #d1d5db;
+                    border-radius: 2px;
                     background: #f9fafb;
                     cursor: pointer;
-                    position: relative;
-                    transition: all 0.15s ease;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
+                    transition: all 0.1s ease;
                 }
                 
                 .position-option:hover {
-                    border-color: #3b82f6;
-                    background: #eff6ff;
-                    transform: scale(1.05);
+                    background: #e5e7eb;
+                    border-color: #9ca3af;
                 }
                 
                 .position-option.active {
-                    border-color: #3b82f6;
                     background: #3b82f6;
-                }
-                
-                .position-option::after {
-                    content: '';
-                    position: absolute;
-                    width: 8px;
-                    height: 8px;
-                    background: #6b7280;
-                    border-radius: 50%;
-                    transition: background 0.15s ease;
-                }
-                
-                .position-option.active::after {
-                    background: white;
-                }
-                
-                .position-option[data-position="top-left"]::after {
-                    top: 6px;
-                    left: 6px;
-                }
-                
-                .position-option[data-position="top-right"]::after {
-                    top: 6px;
-                    right: 6px;
-                }
-                
-                .position-option[data-position="mid-left"]::after {
-                    top: 50%;
-                    left: 6px;
-                    transform: translateY(-50%);
-                }
-                
-                .position-option[data-position="mid-right"]::after {
-                    top: 50%;
-                    right: 6px;
-                    transform: translateY(-50%);
-                }
-                
-                .position-option[data-position="bottom-left"]::after {
-                    bottom: 6px;
-                    left: 6px;
-                }
-                
-                .position-option[data-position="bottom-right"]::after {
-                    bottom: 6px;
-                    right: 6px;
+                    border-color: #2563eb;
                 }
                 
                 .menu-item {
                     width: 100%;
-                    padding: 10px 14px;
+                    padding: 8px 12px;
                     border: none;
-                    background: #f9fafb;
-                    color: #374151;
-                    font-size: 0.875rem;
-                    border-radius: 8px;
-                    cursor: pointer;
-                    transition: all 0.15s ease;
+                    background: none;
                     text-align: left;
-                    font-family: inherit;
+                    font-size: 0.875rem;
+                    color: #374151;
+                    cursor: pointer;
+                    border-radius: 4px;
+                    transition: background-color 0.1s ease;
                 }
                 
                 .menu-item:hover {
                     background: #f3f4f6;
-                    color: #111827;
-                    transform: translateY(-1px);
                 }
                 
                 .menu-item.danger {
@@ -908,100 +473,50 @@ class SafeSignalBadge {
                 
                 .menu-item.danger:hover {
                     background: #fef2f2;
-                    color: #991b1b;
-                }
-                
-                .badge:hover {
-                    transform: scale(1.05);
-                    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.15);
-                }
-                
-                .badge:active {
-                    transform: scale(0.95);
-                }
-                
-                .badge.checking {
-                    background: linear-gradient(135deg, #6b7280 0%, #9ca3af 100%);
-                    color: white;
-                    animation: pulse 2s infinite;
-                }
-                
-                .badge.ok {
-                    background: linear-gradient(135deg, #10b981 0%, #34d399 100%);
-                    color: white;
-                }
-                
-                .badge.warning {
-                    background: linear-gradient(135deg, #f59e0b 0%, #fbbf24 100%);
-                    color: white;
-                }
-                
-                .badge.danger {
-                    background: linear-gradient(135deg, #ef4444 0%, #f87171 100%);
-                    color: white;
-                }
-                
-                @keyframes pulse {
-                    0%, 100% { opacity: 1; }
-                    50% { opacity: 0.7; }
-                }
-                
-                .badge:focus {
-                    outline: 3px solid #3b82f6;
-                    outline-offset: 2px;
-                }
-                
-                .badge.hidden {
-                    display: none;
                 }
             </style>
             
-            <div class="badge checking" 
-                 role="button" 
-                 tabindex="0"
-                 aria-label="SafeSignal security indicator"
-                 aria-live="polite"
-                 title="SafeSignal - Checking page safety">
+            <div class="badge" role="button" tabindex="0" aria-label="SafeSignal - Page safety indicator">
                 <span class="badge-icon">S</span>
                 <div class="badge-status" role="status" aria-live="polite">Checking...</div>
                 
                 <button class="menu-button" 
                         type="button"
-                        title="Badge options"
-                        aria-label="Open badge options menu"
+                        title="Move badge"
+                        aria-label="Move badge to different position"
                         aria-expanded="false">⋯</button>
                 
-                <div class="badge-menu" role="menu" aria-label="Badge options">
+                <div class="badge-menu" role="menu" aria-label="Badge position options">
                     <div class="menu-section">
-                        <div class="menu-label">Position</div>
-                        <div class="position-grid" role="group" aria-label="Badge position options">
+                        <div class="menu-label">Move Badge</div>
+                        <div class="position-grid" role="group" aria-label="Position options">
                             <button class="position-option" 
                                     data-position="top-left" 
                                     type="button"
                                     title="Top Left"
-                                    aria-label="Move badge to top left"></button>
+                                    aria-label="Top left corner"></button>
                             <div></div>
                             <button class="position-option" 
                                     data-position="top-right" 
                                     type="button"
                                     title="Top Right"
-                                    aria-label="Move badge to top right"></button>
+                                    aria-label="Top right corner"></button>
                             <button class="position-option" 
                                     data-position="mid-left" 
                                     type="button"
                                     title="Middle Left"
-                                    aria-label="Move badge to middle left"></button>
+                                    aria-label="Middle left side"></button>
                             <div></div>
                             <button class="position-option" 
                                     data-position="mid-right" 
                                     type="button"
                                     title="Middle Right"
-                                    aria-label="Move badge to middle right"></button>
+                                    aria-label="Middle right side"></button>
                             <button class="position-option" 
                                     data-position="bottom-left" 
                                     type="button"
                                     title="Bottom Left"
-                                    aria-label="Move badge to bottom left"></button>
+                                    aria-label="Bottom left corner"></button>
                             <div></div>
                             <button class="position-option active" 
                                     data-position="bottom-right" 
@@ -1009,13 +524,6 @@ class SafeSignalBadge {
                                     title="Bottom Right"
                                     aria-label="Move badge to bottom right"></button>
                         </div>
-                    </div>
-                    
-                    <div class="menu-section">
-                        <button class="menu-item danger" 
-                                type="button"
-                                role="menuitem"
-                                data-action="hide-site">Hide on this site</button>
                     </div>
                 </div>
             </div>
@@ -1060,17 +568,12 @@ class SafeSignalBadge {
             });
         });
         
-        // Menu actions
-        const hideSiteButton = this.shadowRoot.querySelector('[data-action="hide-site"]');
-        hideSiteButton.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.toggleSiteVisibility();
-        });
-        
         // Close menu when clicking outside
-        document.addEventListener('click', () => {
-            this.closeMenu();
-        });
+        const onDocClick = () => { 
+            if (this.isMenuOpen) this.closeMenu(); 
+        };
+        document.addEventListener('click', onDocClick);
+        this.cleanupHandlers.push(() => document.removeEventListener('click', onDocClick));
         
         // Prevent menu clicks from closing menu
         menu.addEventListener('click', (e) => {
@@ -1082,10 +585,6 @@ class SafeSignalBadge {
             this.handlePositionSelect(e.detail.anchor);
         });
         
-        document.addEventListener('safesignal-hide-site', () => {
-            this.toggleSiteVisibility();
-        });
-        
         // Window resize handler with throttling
         let resizeRaf = null;
         const onResize = () => {
@@ -1095,10 +594,14 @@ class SafeSignalBadge {
                 this.applyPositioning(this.positionState);
                 this.updateStatusBubblePosition();
                 
+                // Reposition context buttons on resize
+                if (this.contextButtons.length > 0) {
+                    this.updateContextButtons();
+                }
+                
                 // Reposition menu if open
-                if (this.isMenuOpen && this.positioning.activeMenuEl) {
-                    const badgeRect = this.getBadgeRect();
-                    this.positioning.applyMenuPosition(this.positioning.activeMenuEl, badgeRect);
+                if (this.isMenuOpen) {
+                    this.positionMenu();
                 }
             });
         };
@@ -1108,9 +611,8 @@ class SafeSignalBadge {
         // Listen to visual viewport changes (mobile keyboard)
         if (window.visualViewport) {
             const onViewportChange = () => {
-                if (this.isMenuOpen && this.positioning.activeMenuEl) {
-                    const badgeRect = this.getBadgeRect();
-                    this.positioning.applyMenuPosition(this.positioning.activeMenuEl, badgeRect);
+                if (this.isMenuOpen) {
+                    this.positionMenu();
                 }
             };
             window.visualViewport.addEventListener('resize', onViewportChange);
@@ -1119,11 +621,23 @@ class SafeSignalBadge {
             );
         }
         
+        // Visibility change handler for performance
+        const onVisibilityChange = () => {
+            this.pageHidden = document.hidden;
+        };
+        document.addEventListener('visibilitychange', onVisibilityChange);
+        this.cleanupHandlers.push(() => document.removeEventListener('visibilitychange', onVisibilityChange));
+        
         // Input proximity detection with proper cleanup tracking
         this.proximityCheckInterval = setInterval(() => {
             this.checkInputProximity();
         }, 2000);
-        this.cleanupHandlers.push(() => clearInterval(this.proximityCheckInterval));
+        this.cleanupHandlers.push(() => {
+            if (this.proximityCheckInterval) {
+                clearInterval(this.proximityCheckInterval);
+                this.proximityCheckInterval = null;
+            }
+        });
     }
 
     checkInputProximity() {
@@ -1196,154 +710,120 @@ class SafeSignalBadge {
     }
 
     setState(newState, options = {}) {
-        if (!['checking', 'ok', 'warning', 'danger'].includes(newState)) {
-            console.warn('SafeSignal: Invalid state:', newState);
-            return;
-        }
-
-        this.currentState = newState;
+        if (!this.shadowRoot) return;
+        
         const badge = this.shadowRoot.querySelector('.badge');
         const icon = this.shadowRoot.querySelector('.badge-icon');
-        const statusEl = this.shadowRoot.querySelector('.badge-status');
         
+        // Remove existing state classes
         badge.classList.remove('checking', 'ok', 'warning', 'danger');
-        badge.classList.add(newState);
         
-        const stateConfig = {
-            checking: { 
-                icon: 'S', 
-                label: 'SafeSignal - Checking page safety', 
-                title: 'SafeSignal - Checking page safety',
-                status: 'Checking...'
-            },
-            ok: { 
-                icon: '✓', 
-                label: 'SafeSignal - Page appears safe', 
-                title: 'SafeSignal - Page appears safe',
-                status: 'Safe'
-            },
-            warning: { 
-                icon: '⚠', 
-                label: 'SafeSignal - Exercise caution', 
-                title: 'SafeSignal - Exercise caution',
-                status: 'Caution'
-            },
-            danger: { 
-                icon: '⚠', 
-                label: 'SafeSignal - Risk signals detected', 
-                title: 'SafeSignal - Risk signals detected',
-                status: 'Risk detected'
-            }
+        // Add new state
+        badge.classList.add(newState);
+        this.currentState = newState;
+        
+        // Update icon and aria-label
+        const states = {
+            checking: { icon: 'S', label: 'SafeSignal - Checking page safety' },
+            ok: { icon: '✓', label: 'SafeSignal - Page appears safe' },
+            warning: { icon: '⚠', label: 'SafeSignal - Exercise caution on this page' },
+            danger: { icon: '✗', label: 'SafeSignal - Risk signals detected on this page' }
         };
         
-        const config = stateConfig[newState];
-        icon.textContent = config.icon;
-        badge.setAttribute('aria-label', config.label);
-        badge.setAttribute('title', config.title);
-        statusEl.textContent = config.status;
+        if (states[newState]) {
+            icon.textContent = states[newState].icon;
+            badge.setAttribute('aria-label', states[newState].label);
+        }
         
         console.log('SafeSignal: State changed to:', newState);
     }
 
-    // === KEYBOARD NAVIGATION ===
-
     handleKeyboardNavigation(e) {
-        if (!this.isVisible) return;
-        
-        switch (e.key) {
-            case 'Enter':
-            case ' ':
-                if (!this.isMenuOpen) {
-                    this.toggleMenu();
-                }
-                e.preventDefault();
-                return;
-            case 'Escape':
-                this.closeMenu();
-                e.preventDefault();
-                return;
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            this.handleBadgeClick();
+        } else if (e.key === 'Escape' && this.isMenuOpen) {
+            this.closeMenu();
         }
     }
 
     // === MENU SYSTEM ===
 
     toggleMenu() {
-        console.log('[SafeSignal] menuButton clicked, opening=', !this.isMenuOpen);
-        console.log('[SafeSignal] positioning helper exists:', !!this.positioning);
-        console.log('[SafeSignal] applyMenuPosition method exists:', !!this.positioning?.applyMenuPosition);
-        
-        this.isMenuOpen = !this.isMenuOpen;
-        const menu = this.shadowRoot.querySelector('.badge-menu');
-        const badge = this.shadowRoot.querySelector('.badge');
-        const menuButton = this.shadowRoot.querySelector('.menu-button');
-        
         if (this.isMenuOpen) {
-            const badgeRect = badge.getBoundingClientRect();
-            
-            // Safety check before calling positioning helper
-            if (!this.positioning || !this.positioning.applyMenuPosition) {
-                console.error('[SafeSignal] Positioning helper not properly initialized');
-                // Fallback: simple positioning
-                menu.style.position = 'fixed';
-                menu.style.left = `${badgeRect.right + 8}px`;
-                menu.style.top = `${badgeRect.bottom + 8}px`;
-                menu.classList.add('open');
-            } else {
-                // Apply smart positioning using the helper
-                this.positioning.applyMenuPosition(menu, badgeRect);
-            }
-            
-            badge.classList.add('menu-open');
-            menuButton.setAttribute('aria-expanded', 'true');
-            
-            // Focus first interactive element
-            const activeMenu = this.positioning?.activeMenuEl || menu;
-            const firstButton = activeMenu.querySelector('.menu-item, .position-option');
-            if (firstButton) firstButton.focus();
-            
-            // Re-measure and adjust after layout settles
-            requestAnimationFrame(() => {
-                const activeMenu = this.positioning?.activeMenuEl || menu;
-                const menuRect = activeMenu.getBoundingClientRect();
-                const vw = window.visualViewport?.width || window.innerWidth;
-                const vh = window.visualViewport?.height || window.innerHeight;
-                
-                console.log('[SafeSignal] Menu positioned at:', {
-                    left: activeMenu.style.left,
-                    top: activeMenu.style.top,
-                    position: activeMenu.style.position,
-                    visible: menuRect.width > 0 && menuRect.height > 0,
-                    rect: menuRect
-                });
-                
-                // Final bounds check and adjustment
-                if (this.positioning && (menuRect.right > vw - 16 || menuRect.bottom > vh - 16)) {
-                    console.log('SafeSignal: Menu overflow detected, adjusting...');
-                    this.positioning.applyMenuPosition(activeMenu, badgeRect);
-                }
-            });
+            this.closeMenu();
         } else {
-            if (this.positioning && this.positioning.closeMenu) {
-                this.positioning.closeMenu();
-            } else {
-                menu.classList.remove('open');
-            }
-            badge.classList.remove('menu-open');
-            menuButton.setAttribute('aria-expanded', 'false');
-            menuButton.focus();
+            this.openMenu();
         }
     }
 
+    openMenu() {
+        if (!this.shadowRoot || this.isMenuOpen) return;
+        
+        const menu = this.shadowRoot.querySelector('.badge-menu');
+        const menuButton = this.shadowRoot.querySelector('.menu-button');
+        
+        if (!menu) return;
+        
+        menu.classList.add('show');
+        menuButton.setAttribute('aria-expanded', 'true');
+        this.isMenuOpen = true;
+        this.positioning.activeMenuEl = menu; // Track active menu
+        
+        // Position menu relative to badge
+        this.positionMenu();
+        
+        console.log('SafeSignal: Menu opened');
+    }
+
     closeMenu() {
-        if (this.isMenuOpen) {
-            this.isMenuOpen = false;
-            const badge = this.shadowRoot.querySelector('.badge');
-            const menuButton = this.shadowRoot.querySelector('.menu-button');
-            
-            this.positioning.closeMenu();
-            badge.classList.remove('menu-open');
-            menuButton.setAttribute('aria-expanded', 'false');
+        if (!this.shadowRoot || !this.isMenuOpen) return;
+        
+        const menu = this.shadowRoot.querySelector('.badge-menu');
+        const menuButton = this.shadowRoot.querySelector('.menu-button');
+        
+        if (!menu) return;
+        
+        menu.classList.remove('show');
+        menuButton.setAttribute('aria-expanded', 'false');
+        this.isMenuOpen = false;
+        this.positioning.activeMenuEl = null; // Clear active menu reference
+        
+        console.log('SafeSignal: Menu closed');
+    }
+
+    positionMenu() {
+        const menu = this.shadowRoot.querySelector('.badge-menu');
+        const badge = this.shadowRoot.querySelector('.badge');
+        
+        if (!menu || !badge) return;
+        
+        const badgeRect = badge.getBoundingClientRect();
+        const menuRect = menu.getBoundingClientRect();
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+        
+        // Calculate preferred position (to the right of badge)
+        let left = badgeRect.right + 8;
+        let top = badgeRect.top;
+        
+        // Adjust if menu would go off-screen
+        if (left + menuRect.width > viewportWidth - 16) {
+            // Position to the left instead
+            left = badgeRect.left - menuRect.width - 8;
         }
+        
+        if (top + menuRect.height > viewportHeight - 16) {
+            // Position above badge
+            top = badgeRect.bottom - menuRect.height;
+        }
+        
+        // Ensure menu stays within viewport
+        left = Math.max(16, Math.min(left, viewportWidth - menuRect.width - 16));
+        top = Math.max(16, Math.min(top, viewportHeight - menuRect.height - 16));
+        
+        menu.style.left = `${left}px`;
+        menu.style.top = `${top}px`;
     }
 
     handlePositionSelect(anchor) {
@@ -1351,245 +831,646 @@ class SafeSignalBadge {
         this.applyPositioning(newPositioning);
         this.savePositioningPreference(newPositioning);
         this.closeMenu();
-        this.showPositionConfirmation(anchor);
+        
+        console.log('SafeSignal: Position selected:', anchor);
     }
 
-    showPositionConfirmation(anchor) {
-        const statusEl = this.shadowRoot.querySelector('.badge-status');
-        const badge = this.shadowRoot.querySelector('.badge');
+    // === SPA DETECTION ===
+
+    setupSPADetection() {
+        // Patch history methods with error handling
+        try {
+            const originalPushState = history.pushState;
+            const originalReplaceState = history.replaceState;
+            
+            history.pushState = (...args) => {
+                originalPushState.apply(history, args);
+                this.checkIfPageChanged('url_change');
+            };
+            
+            history.replaceState = (...args) => {
+                originalReplaceState.apply(history, args);
+                this.checkIfPageChanged('url_change');
+            };
+            
+            // Listen for popstate events
+            const onPopState = () => {
+                this.checkIfPageChanged('url_change');
+            };
+            window.addEventListener('popstate', onPopState);
+            
+            // Cleanup
+            this.cleanupHandlers.push(() => {
+                history.pushState = originalPushState;
+                history.replaceState = originalReplaceState;
+                window.removeEventListener('popstate', onPopState);
+            });
+            
+            console.log('SafeSignal: SPA detection enabled');
+        } catch (e) {
+            console.warn('SafeSignal: Could not patch history methods:', e);
+        }
+    }
+
+    generateContentSignature() {
+        try {
+            // Find main content areas
+            const mainSelectors = ['[role="main"]', 'main', 'article', '#main', '.main-content'];
+            let mainElement = null;
+            
+            for (const selector of mainSelectors) {
+                mainElement = document.querySelector(selector);
+                if (mainElement) break;
+            }
+            
+            // Fallback to largest text container
+            if (!mainElement) {
+                const candidates = document.querySelectorAll('div, section, article');
+                let maxLength = 0;
+                for (const el of candidates) {
+                    const textLength = (el.textContent || '').length;
+                    if (textLength > maxLength) {
+                        maxLength = textLength;
+                        mainElement = el;
+                    }
+                }
+            }
+            
+            if (!mainElement) return 'no-content';
+            
+            const text = mainElement.textContent || '';
+            const len = text.length;
+            
+            if (len === 0) return 'empty';
+            
+            // Simple hash of first/last 1000 chars + link count
+            const first1k = text.substring(0, 1000);
+            const last1k = text.substring(Math.max(0, len - 1000));
+            const linkCount = mainElement.querySelectorAll('a').length;
+            
+            // Simple hash function
+            const hash = (str) => {
+                let hash = 0;
+                for (let i = 0; i < str.length; i++) {
+                    const char = str.charCodeAt(i);
+                    hash = ((hash << 5) - hash) + char;
+                    hash = hash & hash; // Convert to 32-bit integer
+                }
+                return hash;
+            };
+            
+            const h1 = hash(first1k);
+            const h2 = hash(last1k);
+            
+            return `${len}|${h1}|${h2}|${linkCount}`;
+        } catch (e) {
+            console.warn('SafeSignal: Error generating content signature:', e);
+            return 'error';
+        }
+    }
+
+    checkIfPageChanged(trigger) {
+        // Skip checks when tab is hidden (save CPU)
+        if (this.pageHidden && trigger !== 'initial_load') {
+            console.log('SafeSignal: Skipping check - tab hidden');
+            return;
+        }
         
-        const friendlyNames = {
-            'bottom-right': 'Bottom Right',
-            'bottom-left': 'Bottom Left', 
-            'top-right': 'Top Right',
-            'top-left': 'Top Left',
-            'mid-right': 'Middle Right',
-            'mid-left': 'Middle Left'
+        const newUrl = window.location.href;
+        const newSignature = this.generateContentSignature();
+        
+        let hasChanged = false;
+        
+        // Check URL change
+        if (newUrl !== this.currentUrl) {
+            console.log('SafeSignal: URL changed:', this.currentUrl, '→', newUrl);
+            this.currentUrl = newUrl;
+            hasChanged = true;
+        }
+        
+        // Check content change
+        if (newSignature !== this.currentSignature) {
+            console.log('SafeSignal: Content signature changed:', this.currentSignature, '→', newSignature);
+            this.currentSignature = newSignature;
+            hasChanged = true;
+        }
+        
+        // Per-URL cooldown check
+        const now = Date.now();
+        const urlKey = newUrl; // Include fragment for SPA state tracking
+        const lastCheck = this.lastCheckByUrl.get(urlKey) || 0;
+        
+        if (hasChanged || trigger === 'initial_load') {
+            if (now - lastCheck < this.checkCooldown && trigger !== 'initial_load') {
+                console.log('SafeSignal: Skipping check due to cooldown for URL:', urlKey);
+                return;
+            }
+            
+            this.lastCheckByUrl.set(urlKey, now);
+            this.performSecurityCheck(trigger);
+        }
+    }
+
+    async performSecurityCheck(trigger) {
+        console.log('SafeSignal: Performing security check, trigger:', trigger);
+        
+        // Set checking state
+        this.setState('checking');
+        
+        try {
+            // Placeholder for API call
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Simulate different outcomes based on domain (for testing)
+            const hostname = window.location.hostname.toLowerCase();
+            let newState = 'ok';
+            
+            // Simple demo logic - replace with actual API call
+            if (hostname.includes('phishing') || hostname.includes('scam')) {
+                newState = 'danger';
+            } else if (hostname.includes('suspicious') || hostname.includes('warning')) {
+                newState = 'warning';
+            }
+            
+            // Kill demo randomness behind a flag
+            const DEV_DEMO = false;
+            if (DEV_DEMO && Math.random() > 0.8) {
+                newState = 'warning';
+            }
+            
+            this.setState(newState);
+            
+        } catch (error) {
+            console.error('SafeSignal: Security check failed:', error);
+            this.setState('warning');
+        }
+    }
+
+    // === UTILITY METHODS ===
+
+    show() {
+        if (this.shadowRoot) {
+            const badge = this.shadowRoot.querySelector('.badge');
+            if (badge) {
+                badge.classList.remove('hidden');
+            }
+        }
+    }
+
+    hide() {
+        if (this.shadowRoot) {
+            const badge = this.shadowRoot.querySelector('.badge');
+            if (badge) {
+                badge.classList.add('hidden');
+            }
+        }
+    }
+
+    destroy() {
+        console.log('SafeSignal: Destroying badge instance');
+        
+        // Clean up all event listeners and intervals
+        this.cleanupHandlers.forEach(cleanup => {
+            try {
+                cleanup();
+            } catch (e) {
+                console.warn('SafeSignal: Error during cleanup:', e);
+            }
+        });
+        
+        // Clear timers
+        if (this.pageDebounceTimer) {
+            clearTimeout(this.pageDebounceTimer);
+            this.pageDebounceTimer = null;
+        }
+        
+        if (this.proximityCheckInterval) {
+            clearInterval(this.proximityCheckInterval);
+            this.proximityCheckInterval = null;
+        }
+        
+        // Disconnect mutation observer
+        if (this.mutationObserver) {
+            this.mutationObserver.disconnect();
+            this.mutationObserver = null;
+        }
+        
+        // Remove DOM elements
+        if (this.badgeContainer && this.badgeContainer.parentNode) {
+            this.badgeContainer.parentNode.removeChild(this.badgeContainer);
+        }
+        
+        // Clear references
+        this.shadowRoot = null;
+        this.badgeContainer = null;
+        this.positioning = null;
+    }
+}
+
+// Enhanced Badge with Context Detection
+class SafeSignalBadgeEnhanced extends SafeSignalBadge {
+    constructor() {
+        super();
+        
+        // Context detection
+        this.contextProbe = new SafeSignalContextProbe();
+        this.contextData = null;
+        this.contextButtons = [];
+        this._lastProbeTs = 0; // Throttle context probes
+    }
+
+    async init() {
+        if (this.shouldSkipInjection()) {
+            return;
+        }
+
+        await this.loadUserPreferences();
+        
+        if (this.isSiteHidden()) {
+            console.log('SafeSignal: Badge hidden on this site per user preference');
+            return;
+        }
+
+        this.createShadowDOMBadge();
+        this.attachEventListeners();
+        
+        // Initialize positioning helper after shadow root AND event listeners are created
+        this.positioning = new SafeSignalBadgePositioning(this.shadowRoot);
+        this.setupSPADetection();
+        this.setupContentObserver();
+        
+        // Apply saved positioning
+        this.applyPositioning(this.userPreferences.positioning);
+        
+        this.checkIfPageChanged('initial_load');
+        
+        console.log('SafeSignal: Enhanced badge active - Build:', SAFESIGNAL_BUILD);
+    }
+
+    setupContentObserver() {
+        if (this.mutationObserver) return;
+        
+        const target = document.body;
+        const isInteresting = (node) => {
+            if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+            const text = (node.textContent || '').toLowerCase();
+            // Enhanced scan for commerce/health terms
+            return /\$\d|add to cart|buy now|checkout|supplement|treats|prevents|miracle|dosage|clinical|bag|basket|subscribe & save|side effects|contraindications/.test(text);
+        };
+
+        this.mutationObserver = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                if ([...mutation.addedNodes].some(isInteresting)) {
+                    this.checkIfPageChanged('content_mutation');
+                    break;
+                }
+            }
+        });
+
+        this.mutationObserver.observe(target, { childList: true, subtree: true });
+        this.cleanupHandlers.push(() => { 
+            if (this.mutationObserver) {
+                this.mutationObserver.disconnect(); 
+                this.mutationObserver = null;
+            }
+        });
+    }
+
+    checkIfPageChanged(trigger) {
+        // Debounce content mutations
+        if (trigger === 'content_mutation') {
+            if (this.pageDebounceTimer) {
+                clearTimeout(this.pageDebounceTimer);
+            }
+            this.pageDebounceTimer = setTimeout(() => {
+                this.pageDebounceTimer = null;
+                super.checkIfPageChanged(trigger);
+                this.updateContextButtons();
+            }, 800);
+            return;
+        }
+        
+        super.checkIfPageChanged(trigger);
+        this.updateContextButtons();
+        
+        // Delayed re-probe for initial load (SPA content often loads later)
+        if (trigger === 'initial_load') {
+            setTimeout(() => {
+                this.contextData = this.contextProbe.quickContextProbe();
+                this.updateContextButtons();
+            }, 1500);
+        }
+    }
+
+    updateContextButtons() {
+        if (!this.contextProbe) return;
+        
+        // Throttle heavy context scans
+        const now = Date.now();
+        if (now - this._lastProbeTs < 1500) return; // throttle ~1.5s
+        this._lastProbeTs = now;
+        
+        this.contextData = this.contextProbe.quickContextProbe();
+        
+        // Clear existing context buttons
+        this.clearContextButtons();
+        
+        const { isProduct, productConfidence, isHealth, healthConfidence } = this.contextData;
+        
+        // Lower thresholds as suggested
+        if (isProduct && productConfidence >= 0.6) {
+            this.addContextButton('safer-deals', 'Find Safer Deals', '#10b981');
+        }
+        
+        if (isHealth && healthConfidence >= 0.6) {
+            this.addContextButton('health-scan', 'Health Fact Scan', '#3b82f6');
+        }
+    }
+
+    clearContextButtons() {
+        this.contextButtons.forEach(button => {
+            if (button.parentNode) {
+                button.parentNode.removeChild(button);
+            }
+        });
+        this.contextButtons = [];
+    }
+
+    addContextButton(type, text, color) {
+        if (!this.shadowRoot) return;
+        
+        const badge = this.shadowRoot.querySelector('.badge');
+        if (!badge) return;
+        
+        // Check if badge is in lower half to avoid off-screen buttons
+        const badgeRect = this.getBadgeRect();
+        const placeAbove = (badgeRect.bottom > window.innerHeight * 0.6);
+        
+        // Stack multiple buttons with small gap
+        const buttonIndex = this.contextButtons.length;
+        const stackOffset = buttonIndex * 28;
+        
+        const button = document.createElement('div');
+        button.className = `context-button context-button-${type}`;
+        button.textContent = text;
+        button.setAttribute('role', 'button');
+        button.setAttribute('tabindex', '0');
+        button.style.cssText = `
+            position: absolute;
+            ${placeAbove ? 'bottom: calc(100% + 8px);' : 'top: calc(100% + 8px);'}
+            left: 50%;
+            transform: translateX(-50%) translateY(${placeAbove ? -stackOffset : stackOffset}px);
+            background: ${color};
+            color: white;
+            padding: 6px 12px;
+            border-radius: 16px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            cursor: pointer;
+            white-space: nowrap;
+            opacity: 0;
+            transition: opacity 0.2s ease, transform 0.2s ease;
+            z-index: 1000000;
+            pointer-events: auto;
+        `;
+        
+        const handleClick = (e) => {
+            e.stopPropagation();
+            this.handleContextButtonClick(type);
         };
         
-        statusEl.textContent = `Moved to ${friendlyNames[anchor]}`;
+        const handleKeydown = (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                this.handleContextButtonClick(type);
+            }
+        };
         
-        // Update status bubble position before showing
+        button.addEventListener('click', handleClick);
+        button.addEventListener('keydown', handleKeydown);
+        
+        button.addEventListener('mouseenter', () => {
+            button.style.opacity = '1';
+        });
+        
+        button.addEventListener('mouseleave', () => {
+            button.style.opacity = '0.9';
+        });
+        
+        badge.appendChild(button);
+        this.contextButtons.push(button);
+        
+        // Light fade-in for discoverability
+        requestAnimationFrame(() => {
+            button.style.opacity = '0.9';
+        });
+    }
+
+    handleContextButtonClick(type) {
+        console.log('SafeSignal: Context button clicked:', type);
+        
+        // Show coming soon message for now
+        const badge = this.shadowRoot.querySelector('.badge');
+        const statusEl = this.shadowRoot.querySelector('.badge-status');
+        
+        const messages = {
+            'safer-deals': 'Coming soon: Price comparison & safety scores',
+            'health-scan': 'Coming soon: Health claim verification'
+        };
+        
+        statusEl.textContent = messages[type] || 'Feature coming soon';
         this.updateStatusBubblePosition();
         
         badge.classList.add('show-status');
         
         setTimeout(() => {
             badge.classList.remove('show-status');
-        }, 2000);
-    }
-
-    hide() {
-        const badge = this.shadowRoot.querySelector('.badge');
-        badge.classList.add('hidden');
-        this.isVisible = false;
-    }
-
-    show() {
-        const badge = this.shadowRoot.querySelector('.badge');
-        badge.classList.remove('hidden');
-        this.isVisible = true;
-    }
-
-    // === SIMPLIFIED SPA DETECTION ===
-
-    setupSPADetection() {
-        this.patchHistoryAPI();
-        
-        const popstateHandler = () => this.handleURLChange('popstate');
-        window.addEventListener('popstate', popstateHandler);
-        this.cleanupHandlers.push(() => window.removeEventListener('popstate', popstateHandler));
-        
-        const hashchangeHandler = () => this.handleURLChange('hashchange');
-        window.addEventListener('hashchange', hashchangeHandler);
-        this.cleanupHandlers.push(() => window.removeEventListener('hashchange', hashchangeHandler));
-        
-        const pageshowHandler = (e) => {
-            if (e.persisted) {
-                console.log('SafeSignal: Page restored from BFCache, re-initializing');
-                this.checkIfPageChanged('bfcache_restore');
-            }
-        };
-        const pagehideHandler = () => this.destroy();
-        
-        window.addEventListener('pageshow', pageshowHandler);
-        window.addEventListener('pagehide', pagehideHandler);
-        this.cleanupHandlers.push(() => {
-            window.removeEventListener('pageshow', pageshowHandler);
-            window.removeEventListener('pagehide', pagehideHandler);
-        });
-        
-        console.log('SafeSignal: Simplified SPA detection active (history changes only)');
-    }
-
-    patchHistoryAPI() {
-        const originalPushState = history.pushState;
-        const originalReplaceState = history.replaceState;
-        
-        history.pushState = (...args) => {
-            originalPushState.apply(history, args);
-            this.handleURLChange('pushState');
-        };
-        
-        history.replaceState = (...args) => {
-            originalReplaceState.apply(history, args);
-            this.handleURLChange('replaceState');
-        };
-        
-        this.cleanupHandlers.push(() => {
-            history.pushState = originalPushState;
-            history.replaceState = originalReplaceState;
-        });
-        
-        console.log('SafeSignal: History API patched for SPA detection');
-    }
-
-    handleURLChange(source) {
-        const newUrl = window.location.href;
-        if (newUrl !== this.currentUrl) {
-            console.log(`SafeSignal: URL changed (${source}):`, this.currentUrl, '→', newUrl);
-            this.currentUrl = newUrl;
-            this.debouncedPageCheck('url_change');
-        }
-    }
-
-    debouncedPageCheck(reason) {
-        clearTimeout(this.pageDebounceTimer);
-        this.pageDebounceTimer = setTimeout(() => {
-            this.checkIfPageChanged(reason);
-        }, 800);
-    }
-
-    async checkIfPageChanged(reason) {
-        console.log(`SafeSignal: Checking page change (${reason})`);
-        
-        const now = Date.now();
-        const timeSinceLastCheck = now - this.lastCheck;
-        
-        // Always allow initial load and URL changes
-        if (reason === 'url_change' || reason === 'initial_load') {
-            await this.performPageAnalysis(reason);
-            return;
-        }
-        
-        if (timeSinceLastCheck < this.checkCooldown) {
-            console.log(`SafeSignal: Skipping check, cooldown active (${Math.round((this.checkCooldown - timeSinceLastCheck) / 1000)}s remaining)`);
-            return;
-        }
-        
-        await this.performPageAnalysis(reason);
-    }
-
-    async performPageAnalysis(reason) {
-        this.lastCheck = Date.now();
-        console.log(`SafeSignal: Performing page analysis (${reason})`);
-        
-        this.setState('checking');
-        await this.simulateAnalysis();
-        this.determinePageState();
-    }
-
-    async simulateAnalysis() {
-        const delay = Math.random() * 1000 + 500;
-        await new Promise(resolve => setTimeout(resolve, delay));
-    }
-
-    determinePageState() {
-        const url = window.location.href.toLowerCase();
-        const hostname = window.location.hostname.toLowerCase();
-        const path = window.location.pathname.toLowerCase();
-        
-        if (hostname.includes('google') || hostname.includes('wikipedia') || hostname.includes('github')) {
-            this.setState('ok');
-        } else if (path.includes('/login') || path.includes('/signin') || path.includes('/payment')) {
-            this.setState('warning');
-        } else if (url.includes('?utm_') || path.includes('/ad/') || hostname.includes('doubleclick')) {
-            this.setState('warning');
-        } else if (hostname.includes('malware') || hostname.includes('phishing') || path.includes('/scam')) {
-            this.setState('danger');
-        } else {
-            const states = ['ok', 'warning', 'danger'];
-            const weights = [0.7, 0.25, 0.05];
-            const randomState = this.weightedRandomChoice(states, weights);
-            this.setState(randomState);
-        }
-    }
-
-    weightedRandomChoice(choices, weights) {
-        const random = Math.random();
-        let weightSum = 0;
-        
-        for (let i = 0; i < choices.length; i++) {
-            weightSum += weights[i];
-            if (random <= weightSum) {
-                return choices[i];
-            }
-        }
-        
-        return choices[choices.length - 1];
-    }
-
-    destroy() {
-        // Clear all timers
-        [this.pageDebounceTimer, this.proximityCheckInterval].forEach(timer => {
-            if (timer) clearTimeout(timer);
-        });
-        
-        // Clear the proximity check interval specifically
-        if (this.proximityCheckInterval) {
-            clearInterval(this.proximityCheckInterval);
-            this.proximityCheckInterval = null;
-        }
-        
-        // Clean up positioning helper
-        if (this.positioning) {
-            this.positioning.cleanup();
-        }
-        
-        // Run all cleanup handlers
-        this.cleanupHandlers.forEach(cleanup => {
-            try {
-                cleanup();
-            } catch (e) {
-                console.warn('SafeSignal: Cleanup error:', e);
-            }
-        });
-        this.cleanupHandlers = [];
-        
-        // Remove the badge from DOM
-        if (this.badgeContainer && this.badgeContainer.parentNode) {
-            this.badgeContainer.parentNode.removeChild(this.badgeContainer);
-        }
-        
-        console.log('SafeSignal: Badge destroyed and cleaned up');
+        }, 4000);
     }
 }
 
-// Initialize badge when DOM is ready
-let safesignalBadge = null;
+// Context Detection Utility
+class SafeSignalContextProbe {
+    constructor() {
+        this.productIndicators = {
+            priceSelectors: [
+                '[class*="price"]', '[id*="price"]', '.cost', '.amount',
+                '[class*="dollar"]', '[class*="currency"]'
+            ],
+            actionSelectors: [
+                '[class*="cart"]', '[class*="buy"]', '[class*="purchase"]',
+                '[class*="checkout"]', '[class*="order"]'
+            ],
+            shoppingTerms: [
+                'add to cart', 'buy now', 'purchase', 'checkout', 'order now',
+                'price', 'sale', 'discount', 'shipping', 'delivery',
+                'add to bag', 'cart', 'basket', 'subscribe & save', 'bag'
+            ],
+            productCategories: [
+                'clothing', 'electronics', 'books', 'home', 'garden',
+                'appliance', 'phone', 'laptop', 'tv', 'printer', 'wearable'
+            ]
+        };
 
-async function initializeBadge() {
-    if (safesignalBadge) {
-        safesignalBadge.destroy();
+        this.healthIndicators = {
+            healthSelectors: [
+                '[class*="supplement"]', '[class*="vitamin"]', '[class*="health"]',
+                '[class*="medical"]', '[class*="medicine"]'
+            ],
+            healthTerms: [
+                'supplement', 'vitamin', 'health', 'medicine', 'treatment',
+                'cure', 'heal', 'therapy', 'clinical', 'medical',
+                'clinical trial', 'randomized', 'placebo', 'dosage', 'side effects',
+                'contraindications'
+            ],
+            suspiciousHealth: [
+                'miracle cure', 'instant relief', 'guaranteed results',
+                'doctors hate this', 'secret remedy', 'breakthrough',
+                'ancient remedy', 'one weird trick', 'miracle pill'
+            ]
+        };
+    }
+
+    quickContextProbe() {
+        const pageText = document.body.textContent.toLowerCase();
+        const pageHTML = document.body.innerHTML.toLowerCase();
+        
+        // Product detection
+        const productScore = this.calculateProductScore(pageText, pageHTML);
+        const isProduct = productScore > 0.6;
+        
+        // Health detection  
+        const healthScore = this.calculateHealthScore(pageText, pageHTML);
+        const isHealth = healthScore > 0.6;
+        
+        return {
+            isProduct,
+            productConfidence: productScore,
+            isHealth,
+            healthConfidence: healthScore,
+            pageType: this.determinePageType(isProduct, isHealth, productScore, healthScore)
+        };
+    }
+
+    calculateProductScore(pageText, pageHTML) {
+        let score = 0;
+        
+        // Check for price indicators
+        const priceRegex = /\$\d+|\$\d+\.\d+|price.*\$|\d+\.\d+.*usd/gi;
+        const priceMatches = pageText.match(priceRegex);
+        if (priceMatches && priceMatches.length > 0) {
+            score += Math.min(priceMatches.length * 0.2, 0.5);
+        }
+        
+        // Check for shopping terms
+        let termMatches = 0;
+        this.productIndicators.shoppingTerms.forEach(term => {
+            if (pageText.includes(term)) termMatches++;
+        });
+        score += Math.min(termMatches * 0.1, 0.4);
+        
+        // Check for shopping action elements
+        let actionElements = 0;
+        this.productIndicators.actionSelectors.forEach(selector => {
+            actionElements += document.querySelectorAll(selector).length;
+        });
+        score += Math.min(actionElements * 0.1, 0.3);
+        
+        return Math.min(score, 1.0);
+    }
+
+    calculateHealthScore(pageText, pageHTML) {
+        let score = 0;
+        
+        // Check for health terms
+        let healthTerms = 0;
+        this.healthIndicators.healthTerms.forEach(term => {
+            if (pageText.includes(term)) healthTerms++;
+        });
+        score += Math.min(healthTerms * 0.1, 0.5);
+        
+        // Check for suspicious health claims
+        let suspiciousTerms = 0;
+        this.healthIndicators.suspiciousHealth.forEach(term => {
+            if (pageText.includes(term)) suspiciousTerms++;
+        });
+        score += Math.min(suspiciousTerms * 0.2, 0.4);
+        
+        // Check for health-related elements
+        let healthElements = 0;
+        this.healthIndicators.healthSelectors.forEach(selector => {
+            healthElements += document.querySelectorAll(selector).length;
+        });
+        score += Math.min(healthElements * 0.1, 0.3);
+        
+        return Math.min(score, 1.0);
+    }
+
+    determinePageType(isProduct, isHealth, productScore, healthScore) {
+        if (isProduct && isHealth) return 'health-product';
+        if (isProduct) return 'product';
+        if (isHealth) return 'health';
+        return 'general';
+    }
+}
+
+// Badge Positioning Helper (simplified version)
+class SafeSignalBadgePositioning {
+    constructor(shadowRoot) {
+        this.shadowRoot = shadowRoot;
+        this.activeMenuEl = null;
+    }
+
+    applyMenuPosition(menuEl, badgeRect) {
+        // Simple menu positioning - you can expand this later
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+        
+        let left = badgeRect.right + 8;
+        let top = badgeRect.top;
+        
+        // Keep menu in viewport
+        if (left + 200 > viewportWidth) {
+            left = badgeRect.left - 200 - 8;
+        }
+        
+        if (top + 150 > viewportHeight) {
+            top = badgeRect.bottom - 150;
+        }
+        
+        left = Math.max(16, left);
+        top = Math.max(16, top);
+        
+        menuEl.style.left = `${left}px`;
+        menuEl.style.top = `${top}px`;
+    }
+}
+
+// Initialize the badge system
+function initializeBadge() {
+    // Clean up any existing instances
+    if (window.safesignalBadgeInstance) {
+        window.safesignalBadgeInstance.destroy();
+        window.safesignalBadgeInstance = null;
     }
     
-    safesignalBadge = new SafeSignalBadge();
+    // Create new enhanced badge instance
+    window.safesignalBadgeInstance = new SafeSignalBadgeEnhanced();
 }
 
+// Export classes for potential external use
+if (typeof window !== 'undefined') {
+    window.SafeSignalBadge = SafeSignalBadgeEnhanced;
+    window.SafeSignalContextProbe = SafeSignalContextProbe;
+    window.SafeSignalBadgePositioning = SafeSignalBadgePositioning;
+}
+
+// Auto-initialize when script loads
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initializeBadge);
 } else {
     initializeBadge();
-}
-
-window.addEventListener('beforeunload', () => {
-    if (safesignalBadge) {
-        safesignalBadge.destroy();
-    }
-});
-
-if (typeof window !== 'undefined') {
-    window.SafeSignalBadge = SafeSignalBadge;
 }
 /******/ })()
 ;
