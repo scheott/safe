@@ -1,0 +1,106 @@
+{
+  "version": "1.0",
+  "updated": "2024-12-19",
+  "suspicious_tlds": {
+    "high_risk": [
+      ".tk",
+      ".ml",
+      ".ga",
+      ".cf",
+      ".gq"
+    ],
+    "medium_risk": [
+      ".top",
+      ".click",
+      ".download",
+      ".stream",
+      ".xyz"
+    ]
+  },
+  "keywords": {
+    "hype": [
+      "limited offer",
+      "act now",
+      "exclusive deal",
+      "don't miss out",
+      "expires soon",
+      "immediate action required",
+      "flash sale",
+      "ends today",
+      "immediate action",
+      "hurry",
+      "only today",
+      "limited time",
+      "once in a lifetime",
+      "urgent"
+    ],
+    "financial": [
+      "verify now",
+      "please verify",
+      "verify your account",
+      "confirm identity",
+      "unauthorized access detected",
+      "confirm payment method",
+      "billing issue",
+      "confirm your identity",
+      "security alert",
+      "update payment",
+      "suspended account",
+      "verify account",
+      "your billing",
+      "unauthorized access",
+      "your account suspended",
+      "account has been suspended",
+      "verify card",
+      "account suspended",
+      "action required",
+      "update your payment"
+    ],
+    "health": [
+      "miracle cure",
+      "doctors hate",
+      "lose weight fast",
+      "secret formula",
+      "breakthrough discovery",
+      "natural remedy",
+      "fda approved",
+      "clinical study shows",
+      "guaranteed results",
+      "amazing discovery",
+      "weird trick"
+    ],
+    "scam_general": [
+      "congratulations",
+      "you've won",
+      "claim now",
+      "free money",
+      "guaranteed",
+      "no risk",
+      "winner",
+      "selected",
+      "prize"
+    ]
+  },
+  "patterns": {
+    "urgency_timer": {
+      "regex": "(expires in|only \\d+ left|\\d+ people viewing)",
+      "weight": 1,
+      "description": "Creates false urgency"
+    },
+    "caps_heavy": {
+      "regex": "([A-Z]{4,}\\s+){2,}",
+      "weight": 1,
+      "description": "Excessive capitalization"
+    },
+    "multiple_exclamation": {
+      "regex": "!{3,}",
+      "weight": 1,
+      "description": "Excessive exclamation marks"
+    },
+    "phone_emphasis": {
+      "regex": "call now.{0,20}\\d{3}[-.]?\\d{3}[-.]?\\d{4}",
+      "weight": 1,
+      "description": "Urgent phone number requests"
+    }
+  }
+}

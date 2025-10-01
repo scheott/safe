@@ -1,0 +1,170 @@
+{
+  "version": "1.0",
+  "updated": "2024-12-19",
+  "domains": {
+    "reuters.com": {
+      "score": -2,
+      "category": "news"
+    },
+    "ap.org": {
+      "score": -2,
+      "category": "news"
+    },
+    "npr.org": {
+      "score": -2,
+      "category": "news"
+    },
+    "bbc.com": {
+      "score": -2,
+      "category": "news"
+    },
+    "pbs.org": {
+      "score": -2,
+      "category": "news"
+    },
+    "irs.gov": {
+      "score": -2,
+      "category": "government"
+    },
+    "ssa.gov": {
+      "score": -2,
+      "category": "government"
+    },
+    "medicare.gov": {
+      "score": -2,
+      "category": "government"
+    },
+    "usa.gov": {
+      "score": -2,
+      "category": "government"
+    },
+    "cdc.gov": {
+      "score": -2,
+      "category": "government"
+    },
+    "fda.gov": {
+      "score": -2,
+      "category": "government"
+    },
+    "mayoclinic.org": {
+      "score": -2,
+      "category": "healthcare"
+    },
+    "webmd.com": {
+      "score": -2,
+      "category": "healthcare"
+    },
+    "nih.gov": {
+      "score": -2,
+      "category": "government"
+    },
+    "medlineplus.gov": {
+      "score": -2,
+      "category": "government"
+    },
+    "google.com": {
+      "score": -2,
+      "category": "technology"
+    },
+    "microsoft.com": {
+      "score": -2,
+      "category": "technology"
+    },
+    "apple.com": {
+      "score": -2,
+      "category": "technology"
+    },
+    "github.com": {
+      "score": -2,
+      "category": "technology"
+    },
+    "stackoverflow.com": {
+      "score": -2,
+      "category": "unknown"
+    },
+    "wikipedia.org": {
+      "score": -2,
+      "category": "education"
+    },
+    "khanacademy.org": {
+      "score": -2,
+      "category": "education"
+    },
+    "coursera.org": {
+      "score": -2,
+      "category": "education"
+    },
+    "edx.org": {
+      "score": -2,
+      "category": "education"
+    },
+    "chase.com": {
+      "score": -2,
+      "category": "banking"
+    },
+    "bankofamerica.com": {
+      "score": -2,
+      "category": "banking"
+    },
+    "wellsfargo.com": {
+      "score": -2,
+      "category": "unknown"
+    },
+    "citi.com": {
+      "score": -2,
+      "category": "banking"
+    },
+    "capitalone.com": {
+      "score": -2,
+      "category": "banking"
+    },
+    "discover.com": {
+      "score": -2,
+      "category": "banking"
+    },
+    "amazon.com": {
+      "score": -2,
+      "category": "retail"
+    },
+    "walmart.com": {
+      "score": -2,
+      "category": "retail"
+    },
+    "target.com": {
+      "score": -2,
+      "category": "retail"
+    },
+    "bestbuy.com": {
+      "score": -2,
+      "category": "retail"
+    },
+    "homedepot.com": {
+      "score": -2,
+      "category": "unknown"
+    },
+    "costco.com": {
+      "score": -2,
+      "category": "unknown"
+    },
+    "youtube.com": {
+      "score": -2,
+      "category": "social"
+    },
+    "facebook.com": {
+      "score": -2,
+      "category": "social"
+    },
+    "linkedin.com": {
+      "score": -2,
+      "category": "social"
+    },
+    "indeed.com": {
+      "score": -2,
+      "category": "unknown"
+    },
+    "zillow.com": {
+      "score": -2,
+      "category": "unknown"
+    }
+  }
+}

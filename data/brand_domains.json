@@ -1,0 +1,86 @@
+{
+  "version": "1.0",
+  "updated": "2024-12-19",
+  "categories": {
+    "banking": [
+      "chase.com",
+      "bankofamerica.com",
+      "wellsfargo.com",
+      "citi.com",
+      "capitalone.com",
+      "discover.com",
+      "usbank.com",
+      "pnc.com",
+      "truist.com",
+      "regions.com",
+      "ally.com",
+      "schwab.com"
+    ],
+    "technology": [
+      "google.com",
+      "microsoft.com",
+      "apple.com",
+      "amazon.com",
+      "facebook.com",
+      "netflix.com",
+      "adobe.com",
+      "salesforce.com"
+    ],
+    "government": [
+      "irs.gov",
+      "ssa.gov",
+      "medicare.gov",
+      "dmv.org",
+      "usps.com",
+      "fedex.com",
+      "ups.com"
+    ],
+    "healthcare": [
+      "mayoclinic.org",
+      "webmd.com",
+      "cvs.com",
+      "walgreens.com",
+      "unitedhealthcare.com",
+      "anthem.com",
+      "humana.com"
+    ],
+    "retail": [
+      "walmart.com",
+      "target.com",
+      "bestbuy.com",
+      "homedepot.com",
+      "lowes.com",
+      "costco.com",
+      "samsclub.com",
+      "macys.com"
+    ],
+    "financial_services": [
+      "paypal.com",
+      "venmo.com",
+      "cashapp.com",
+      "zelle.com",
+      "westernunion.com",
+      "moneygram.com",
+      "square.com",
+      "stripe.com"
+    ],
+    "telecommunications": [
+      "verizon.com",
+      "att.com",
+      "tmobile.com",
+      "sprint.com",
+      "comcast.com",
+      "spectrum.com",
+      "cox.com"
+    ],
+    "insurance": [
+      "geico.com",
+      "statefarm.com",
+      "allstate.com",
+      "progressive.com",
+      "nationwide.com",
+      "farmers.com",
+      "liberty.com"
+    ]
+  }
+}

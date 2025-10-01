@@ -1,0 +1,49 @@
+{
+  "version": "1.0",
+  "updated": "2024-12-19",
+  "weights": {
+    "domain_reputation": {
+      "reputable_domain": -2,
+      "unknown_domain": 0,
+      "suspicious_tld": 2,
+      "very_suspicious_tld": 3
+    },
+    "url_structure": {
+      "excessive_subdomains": 1,
+      "suspicious_path": 1,
+      "random_string": 2,
+      "url_shortener": 1
+    },
+    "brand_similarity": {
+      "exact_match_different_tld": 3,
+      "typosquatting": 2,
+      "homograph_attack": 3,
+      "subdomain_impersonation": 2
+    },
+    "content_heuristics": {
+      "offsite_form_action": 2,
+      "excessive_urgency": 1,
+      "financial_verification": 2,
+      "health_claims": 1,
+      "high_caps_ratio": 1,
+      "suspicious_contact": 1
+    },
+    "technical_signals": {
+      "no_https": 1,
+      "suspicious_redirects": 2,
+      "blocked_by_security": 3,
+      "new_domain": 1,
+      "hidden_whois": 1
+    }
+  },
+  "thresholds": {
+    "danger": 4,
+    "warning": 2,
+    "ok": 1
+  },
+  "boost_rules": {
+    "lookalike_suspicious_tld": 2,
+    "auth_path_boost": 2,
+    "multiple_keywords_same_category": 1
+  }
+}

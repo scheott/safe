@@ -1,0 +1,46 @@
+{
+  "intermittent-fasting": {
+    "canonical": "intermittent fasting",
+    "aliases": ["if", "time restricted eating", "16:8"],
+    "category": "diet",
+    "verdict": "mixed",
+    "key_points": [
+      "Modest weight loss comparable to calorie restriction",
+      "May improve insulin sensitivity",
+      "Not recommended for certain conditions"
+    ]
+  },
+  "vitamin-d": {
+    "canonical": "vitamin D supplementation",
+    "aliases": ["vit d", "d3", "cholecalciferol"],
+    "category": "supplement",
+    "verdict": "promising",
+    "key_points": [
+      "Beneficial for deficiency states",
+      "May support bone health",
+      "Optimal dosing varies by individual"
+    ]
+  },
+  "keto-diet": {
+    "canonical": "ketogenic diet",
+    "aliases": ["keto", "low carb high fat", "lchf"],
+    "category": "diet",
+    "verdict": "mixed",
+    "key_points": [
+      "Effective for short-term weight loss",
+      "Potential therapeutic uses in epilepsy",
+      "Long-term safety concerns exist"
+    ]
+  },
+  "omega-3": {
+    "canonical": "omega-3 fatty acids",
+    "aliases": ["fish oil", "epa", "dha"],
+    "category": "supplement",
+    "verdict": "promising",
+    "key_points": [
+      "Supports cardiovascular health",
+      "May reduce inflammation",
+      "Best from food sources"
+    ]
+  }
+}

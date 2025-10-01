@@ -5,8 +5,7 @@ from fastapi.responses import JSONResponse
 import logging
 import time
 import os
-from scan_endpoints import router as scan_router
-
+from src.scan_endpoints import router as scan_router
 from .routes import check
 from .services.database import get_db_service
 from .services.reputation_service import ReputationService
