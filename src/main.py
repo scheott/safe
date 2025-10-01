@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 import logging
 import time
 import os
+from scan_endpoints import router as scan_router
 
 from .routes import check
 from .services.database import get_db_service
@@ -41,6 +42,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
+app.include_router(scan_router)
 
 @app.on_event("startup")
 async def startup_event():

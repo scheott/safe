@@ -3,6 +3,7 @@
 
 const SAFESIGNAL_BUILD = 'content-2025-09-29-v4.1-fixed';
 console.info('[SafeSignal] Build:', SAFESIGNAL_BUILD);
+import { PageScanner, ScannerUI } from './scanners.js';
 
 class SafeSignalBadge {
     constructor() {
@@ -1181,7 +1182,9 @@ function initializeSafeSignal() {
     
     // Create new instance
     window.safeSignalInstance = new SafeSignalBadge();
-    
+    const apiClient = new APIClient(API_BASE_URL);
+    const scanner = new PageScanner(apiClient);
+    const scannerUI = new ScannerUI(scanner, shadowRoot);
     console.log('[SafeSignal] Extension initialized');
 }
 
