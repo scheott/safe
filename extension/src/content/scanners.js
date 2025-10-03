@@ -1,423 +1,237 @@
-// extension/src/scanners.js
-/**
- * Phase 2.5: Client-side scanner integration
- * Handles product and health detection + API calls
- */
+// extension/src/content/scanners.js
+// Phase 2.5 - Health & Product Scanning UI
+// Connects to backend scan endpoints and displays results
+
+const API_BASE_URL = 'http://localhost:8000'; // TODO: Update to production URL
+
+// ============================================================================
+// API CLIENT
+// ============================================================================
+
+class APIClient {
+  constructor(baseUrl) {
+    this.baseUrl = baseUrl;
+  }
+  
+  async post(endpoint, data) {
+    try {
+      const response = await fetch(`${this.baseUrl}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data)
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      return await response.json();
+      
+    } catch (error) {
+      console.error(`API call failed: ${endpoint}`, error);
+      throw error;
+    }
+  }
+}
+
+// ============================================================================
+// PAGE SCANNER - Detects context and calls appropriate endpoints
+// ============================================================================
 
 class PageScanner {
   constructor(apiClient) {
     this.api = apiClient;
-    this.cache = new Map(); // Simple in-memory cache
-    this.cacheTimeout = 5 * 60 * 1000; // 5 minutes
+    this.cache = new Map();
+    this.cacheTimeout = 30 * 60 * 1000; // 30 minutes
   }
-
+  
   // =========================================================================
   // CONTEXT DETECTION
   // =========================================================================
-
-  /**
-   * Quick local probe to detect page type
-   * Returns confidence scores for different contexts
-   */
-  quickContextProbe() {
-    const signals = {
-      product: 0,
-      health: 0,
-      news: 0,
-      general: 0
-    };
-
-    // Get page text samples
-    const title = document.title.toLowerCase();
-    const metaDesc = this.getMetaContent('description');
-    const bodyText = this.getBodySample();
-    const url = window.location.href.toLowerCase();
-
-    // Product signals
-    const productSignals = [
-      /\$[\d,]+\.?\d*/g,  // Price patterns
-      /add to cart/i,
-      /buy now/i,
-      /in stock/i,
-      /out of stock/i,
-      /shipping/i,
-      /review/i,
-      /rating/i,
-      /product/i,
-      /price/i
-    ];
-
-    productSignals.forEach(pattern => {
-      if (pattern.test(bodyText) || pattern.test(title)) {
-        signals.product += 0.15;
-      }
-    });
-
-    // Check for structured data
-    if (this.getProductStructuredData()) {
-      signals.product += 0.4;
-    }
-
-    // Health signals  
-    const healthSignals = [
-      /symptom/i,
-      /treatment/i,
-      /disease/i,
-      /health/i,
-      /medical/i,
-      /doctor/i,
-      /medicine/i,
-      /supplement/i,
-      /vitamin/i,
-      /cure/i,
-      /remedy/i,
-      /clinical/i,
-      /study/i,
-      /research/i
-    ];
-
-    healthSignals.forEach(pattern => {
-      if (pattern.test(bodyText) || pattern.test(title)) {
-        signals.health += 0.12;
-      }
-    });
-
-    // URL patterns
-    if (url.includes('product') || url.includes('item') || url.includes('/p/')) {
-      signals.product += 0.3;
-    }
-    if (url.includes('health') || url.includes('medical') || url.includes('symptom')) {
-      signals.health += 0.3;
-    }
-
-    // Normalize scores
-    const maxScore = Math.max(...Object.values(signals));
-    if (maxScore > 0) {
-      Object.keys(signals).forEach(key => {
-        signals[key] = signals[key] / maxScore;
-      });
-    }
-
-    return signals;
-  }
-
-  // =========================================================================
-  // HINT EXTRACTION
-  // =========================================================================
-
-  /**
-   * Extract product hints from the page
-   */
-  extractProductHints() {
+  
+  detectProductContext() {
     const hints = {
-      title: null,
-      brand: null,
-      model: null,
-      upc: null,
-      price: null,
-      domPath: {}
+      product_name: '',
+      title: ''
     };
-
-    // Try structured data first
-    const productData = this.getProductStructuredData();
-    if (productData) {
-      hints.title = productData.name;
-      hints.brand = productData.brand?.name;
-      if (productData.offers) {
-        hints.price = parseFloat(productData.offers.price);
-      }
-      if (productData.gtin || productData.gtin13) {
-        hints.upc = productData.gtin || productData.gtin13;
-      }
-    }
-
-    // Fallback to DOM extraction
-    if (!hints.title) {
-      // Common product title selectors
-      const titleSelectors = [
-        'h1[itemprop="name"]',
-        '#productTitle',
-        '.product-title',
-        '.product-name',
-        'h1.title',
-        'h1'
-      ];
-
-      for (const selector of titleSelectors) {
-        const el = document.querySelector(selector);
-        if (el && el.textContent.trim()) {
-          hints.title = el.textContent.trim().slice(0, 120);
-          hints.domPath.title = selector;
-          break;
-        }
-      }
-    }
-
-    // Extract brand
-    if (!hints.brand) {
-      const brandSelectors = [
-        '[itemprop="brand"]',
-        '.product-brand',
-        '.brand-name',
-        'a[href*="/brand/"]'
-      ];
-
-      for (const selector of brandSelectors) {
-        const el = document.querySelector(selector);
-        if (el) {
-          hints.brand = el.textContent.trim().slice(0, 40);
-          break;
-        }
-      }
-    }
-
-    // Extract price
-    if (!hints.price) {
-      const priceSelectors = [
-        '[itemprop="price"]',
-        '.price',
-        '#priceblock_ourprice',
-        '.product-price',
-        '.current-price'
-      ];
-
-      for (const selector of priceSelectors) {
-        const el = document.querySelector(selector);
-        if (el) {
-          const priceMatch = el.textContent.match(/[\d,]+\.?\d*/);
-          if (priceMatch) {
-            hints.price = parseFloat(priceMatch[0].replace(',', ''));
-            hints.domPath.price = selector;
-            break;
-          }
-        }
-      }
-    }
-
-    // Extract model from title or page
-    if (!hints.model && hints.title) {
-      // Common model patterns
-      const modelMatch = hints.title.match(/\b([A-Z0-9]{2,}[\-A-Z0-9]+)\b/);
-      if (modelMatch) {
-        hints.model = modelMatch[1];
-      }
-    }
-
-    return hints;
-  }
-
-  /**
-   * Extract health claims from the page
-   */
-  extractHealthHints() {
-    const hints = {
-      claims: [],
-      topic: null,
-      excerpt: null,
-      domPath: {}
-    };
-
-    // Look for claim patterns
-    const claimSelectors = [
-      'h1, h2, h3',  // Headers often contain claims
-      '.claim',
-      '.benefit',
-      '[itemprop="description"]',
-      '.product-description li'
-    ];
-
-    const foundClaims = new Set();
     
-    // Use outer loop with early exit
-    outer: for (const selector of claimSelectors) {
-      const elements = document.querySelectorAll(selector);
-      
-      for (const el of elements) {
-        const text = el.textContent.trim();
-        
-        // Look for health claim patterns
-        const claimPatterns = [
-          /(?:helps?|supports?|promotes?|improves?|reduces?|prevents?|treats?|cures?)\s+.{5,50}/gi,
-          /clinically\s+(?:proven|tested|shown)/gi,
-          /\d+%\s+(?:improvement|reduction|better)/gi,
-          /(?:boosts?|strengthens?|enhances?)\s+.{5,50}/gi,
-          /(?:natural|organic|pure)\s+(?:remedy|treatment|cure)/gi
-        ];
-        
-        for (const pattern of claimPatterns) {
-          const matches = text.match(pattern);
-          if (matches) {
-            for (const match of matches) {
-              const claim = match.trim().slice(0, 200);
-              if (claim.length > 10 && !foundClaims.has(claim)) {
-                foundClaims.add(claim);
-                hints.claims.push(claim);
-                if (hints.claims.length >= 3) break outer;
-              }
-            }
-          }
-        }
-      }
+    // Try to extract product name from page
+    const titleEl = document.querySelector('h1, [class*="product-title"], [class*="productTitle"]');
+    if (titleEl) {
+      hints.product_name = titleEl.textContent.trim();
     }
-
-    // Extract topic from title or main heading
-    const h1 = document.querySelector('h1');
-    if (h1) {
-      // Extract potential health topic
-      const topicMatch = h1.textContent.match(
-        /(?:vitamin\s+\w+|omega[\s-]?\d+|probiotics?|collagen|turmeric|cbd|melatonin)/i
-      );
-      if (topicMatch) {
-        hints.topic = topicMatch[0].toLowerCase();
-      }
-    }
-
-    // Get excerpt from main content
-    const mainContent = document.querySelector('main, article, .content, #content');
-    if (mainContent) {
-      hints.excerpt = mainContent.textContent
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 400);
-    }
-
-    return hints;
+    
+    // Fallback to page title
+    hints.title = document.title;
+    
+    // Look for product indicators
+    const isProduct = this._hasProductIndicators();
+    
+    return { hints, confidence: isProduct ? 0.8 : 0.3 };
   }
-
+  
+  detectHealthContext() {
+    const hints = {
+      title: '',
+      claims_text: ''
+    };
+    
+    // Get page title
+    hints.title = document.title;
+    
+    // Get main content sample
+    const mainContent = document.querySelector('main, article, [role="main"], .content');
+    if (mainContent) {
+      const text = mainContent.textContent.trim();
+      hints.claims_text = text.substring(0, 500);
+    }
+    
+    // Check for health indicators
+    const isHealth = this._hasHealthIndicators();
+    
+    return { hints, confidence: isHealth ? 0.8 : 0.3 };
+  }
+  
+  _hasProductIndicators() {
+    const indicators = [
+      document.querySelector('[class*="product"]'),
+      document.querySelector('[class*="cart"]'),
+      document.querySelector('[class*="price"]'),
+      document.querySelector('[itemtype*="Product"]'),
+      /buy|purchase|cart|price|\$\d+/i.test(document.body.textContent)
+    ];
+    
+    return indicators.filter(Boolean).length >= 2;
+  }
+  
+  _hasHealthIndicators() {
+    const indicators = [
+      /health|medical|symptom|disease|treatment|diagnosis/i.test(document.title),
+      document.querySelector('[class*="health"], [class*="medical"]'),
+      /CDC|NIH|Mayo Clinic|WebMD/i.test(document.body.textContent)
+    ];
+    
+    return indicators.filter(Boolean).length >= 1;
+  }
+  
   // =========================================================================
-  // API CALLS
+  // SCAN METHODS
   // =========================================================================
-
-  /**
-   * Scan for safer product deals
-   */
-  async scanProduct(url = window.location.href, mode = 'fast') {
-    const cacheKey = `product:${url}:${mode}`;
+  
+  async scanProduct(url, mode = 'fast') {
+    const cacheKey = `product:${url}`;
     
     // Check cache
-    const cached = this.getCached(cacheKey);
-    if (cached) return cached;
-
-    // Extract hints
-    const hints = this.extractProductHints();
-    
-    // Must have at least a title
-    if (!hints.title) {
-      return {
-        error: 'Could not detect product information',
-        confidence: 0
-      };
+    const cached = this.getCache(cacheKey);
+    if (cached) {
+      return cached;
     }
-
+    
+    // Detect product context
+    const { hints } = this.detectProductContext();
+    
     try {
       const response = await this.api.post('/api/scan/product', {
         url,
         hints,
         mode
       });
-
+      
       // Cache successful response
-      this.setCache(cacheKey, response, response.ttl_sec * 1000);
+      this.setCache(cacheKey, response);
       
       return response;
+      
     } catch (error) {
       console.error('Product scan failed:', error);
       
-      // Retry with full mode if fast mode failed
-      if (mode === 'fast' && error.code === 'TIMEOUT') {
-        return this.scanProduct(url, 'full');
-      }
-      
-      throw error;
-    }
-  }
-
-  /**
-   * Scan for health fact checking
-   */
-  async scanHealth(url = window.location.href, mode = 'fast') {
-    const cacheKey = `health:${url}:${mode}`;
-    
-    // Check cache
-    const cached = this.getCached(cacheKey);
-    if (cached) return cached;
-
-    // Extract hints
-    const hints = this.extractHealthHints();
-    
-    // Must have at least one claim
-    if (!hints.claims.length) {
+      // Return error response
       return {
-        error: 'Could not detect health claims',
-        confidence: 0
+        product_name: hints.product_name,
+        advisory: "Unable to check this site right now.",
+        risk_signals: [],
+        compare_links: this._getFallbackRetailers(hints.product_name),
+        latency_ms: 0,
+        from_cache: false,
+        error: true
       };
     }
-
+  }
+  
+  async scanHealth(url, mode = 'fast') {
+    const cacheKey = `health:${url}`;
+    
+    // Check cache
+    const cached = this.getCache(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    
+    // Detect health context
+    const { hints } = this.detectHealthContext();
+    
     try {
       const response = await this.api.post('/api/scan/health', {
         url,
         hints,
         mode
       });
-
+      
       // Cache successful response
-      this.setCache(cacheKey, response, response.ttl_sec * 1000);
+      this.setCache(cacheKey, response);
       
       return response;
+      
     } catch (error) {
       console.error('Health scan failed:', error);
       
-      // Retry with full mode if fast mode failed
-      if (mode === 'fast' && error.code === 'TIMEOUT') {
-        return this.scanHealth(url, 'full');
-      }
-      
-      throw error;
+      // Return error response with fallback links
+      return {
+        topic: hints.title || 'health information',
+        verdict: 'uncertain',
+        bullets: [
+          "We couldn't check health sources right now.",
+          "Please use the trusted medical links below."
+        ],
+        citations: this._getFallbackHealthSources(hints.title),
+        latency_ms: 0,
+        from_cache: false,
+        error: true
+      };
     }
   }
-
+  
   // =========================================================================
-  // UTILITIES
+  // FALLBACK HELPERS
   // =========================================================================
-
-  getMetaContent(name) {
-    const meta = document.querySelector(`meta[name="${name}"], meta[property="og:${name}"]`);
-    return meta?.content || '';
+  
+  _getFallbackRetailers(productName) {
+    const query = encodeURIComponent(productName || 'product search');
+    return [
+      { retailer: 'Amazon', url: `https://www.amazon.com/s?k=${query}` },
+      { retailer: 'Target', url: `https://www.target.com/s?searchTerm=${query}` },
+      { retailer: 'Walmart', url: `https://www.walmart.com/search?q=${query}` },
+      { retailer: 'Google Shopping', url: `https://www.google.com/search?tbm=shop&q=${query}` }
+    ];
   }
-
-  getBodySample(maxLength = 1000) {
-    const body = document.body.textContent || '';
-    return body.slice(0, maxLength).toLowerCase();
+  
+  _getFallbackHealthSources(topic) {
+    const query = encodeURIComponent(topic || 'health');
+    return [
+      { name: 'CDC', url: `https://search.cdc.gov/search/?query=${query}` },
+      { name: 'NIH', url: `https://search.nih.gov/search?q=${query}` },
+      { name: 'Mayo Clinic', url: `https://www.mayoclinic.org/search/search-results?q=${query}` },
+      { name: 'MedlinePlus', url: `https://medlineplus.gov/search.html?query=${query}` }
+    ];
   }
-
-  getProductStructuredData() {
-    const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-    
-    for (const script of scripts) {
-      try {
-        const data = JSON.parse(script.textContent);
-        
-        // Check if it's a Product schema
-        if (data['@type'] === 'Product' || data.type === 'Product') {
-          return data;
-        }
-        
-        // Check nested graph
-        if (data['@graph']) {
-          const product = data['@graph'].find(
-            item => item['@type'] === 'Product'
-          );
-          if (product) return product;
-        }
-      } catch (e) {
-        // Invalid JSON, skip
-      }
-    }
-    
-    return null;
-  }
-
-  getCached(key) {
+  
+  // =========================================================================
+  // CACHE MANAGEMENT
+  // =========================================================================
+  
+  getCache(key) {
     const item = this.cache.get(key);
     if (!item) return null;
     
@@ -428,495 +242,719 @@ class PageScanner {
     
     return item.data;
   }
-
-  setCache(key, data, ttl = this.cacheTimeout) {
+  
+  setCache(key, data) {
     this.cache.set(key, {
       data,
-      expires: Date.now() + ttl
+      expires: Date.now() + this.cacheTimeout
     });
+    
+    // Cleanup if cache gets too big
+    if (this.cache.size > 100) {
+      const oldestKey = this.cache.keys().next().value;
+      this.cache.delete(oldestKey);
+    }
   }
 }
 
-// =========================================================================
-// BADGE UI INTEGRATION
-// =========================================================================
+// ============================================================================
+// SCANNER UI - Modal rendering and interactions
+// ============================================================================
 
 class ScannerUI {
   constructor(scanner, shadowRoot) {
     this.scanner = scanner;
     this.shadowRoot = shadowRoot;
-    this.container = null;
-    this.initUI();
+    this.activeModal = null;
+    
+    this.addStyles();
   }
-
-  initUI() {
-    // Add scanner buttons to badge
+  
+  // =========================================================================
+  // BUTTON CLICK HANDLERS
+  // =========================================================================
+  
+  async handleHealthScan() {
+    this.showLoadingModal('Checking trusted medical sources...');
+    
+    try {
+      const response = await this.scanner.scanHealth(window.location.href, 'fast');
+      this.showHealthResults(response);
+      
+    } catch (error) {
+      this.showErrorModal('health', error);
+    }
+  }
+  
+  async handleProductScan() {
+    this.showLoadingModal('Finding trusted retailers...');
+    
+    try {
+      const response = await this.scanner.scanProduct(window.location.href, 'fast');
+      this.showProductResults(response);
+      
+    } catch (error) {
+      this.showErrorModal('product', error);
+    }
+  }
+  
+  // =========================================================================
+  // RESULT RENDERING
+  // =========================================================================
+  
+  showHealthResults(data) {
+    const verdictEmoji = {
+      'safe': '✅',
+      'mixed': '⚠️',
+      'harmful': '❌',
+      'uncertain': '❓'
+    };
+    
+    const modal = this.createModal();
+    modal.innerHTML = `
+      <div class="ss-modal-content ss-health">
+        <div class="ss-modal-header">
+          <h3>🩺 Health Information Check</h3>
+          <button class="ss-close-btn" aria-label="Close">×</button>
+        </div>
+        
+        <div class="ss-topic-badge">
+          ${this.escapeHtml(data.topic)}
+        </div>
+        
+        <div class="ss-verdict-badge ss-verdict-${data.verdict}">
+          ${verdictEmoji[data.verdict]} ${this.formatVerdict(data.verdict)}
+        </div>
+        
+        <div class="ss-summary">
+          ${data.bullets.map(bullet => `
+            <p class="ss-bullet">• ${this.escapeHtml(bullet)}</p>
+          `).join('')}
+        </div>
+        
+        <div class="ss-citations">
+          <p class="ss-citations-label">Read more from trusted sources:</p>
+          ${data.citations.map(citation => `
+            <a href="${citation.url}" target="_blank" rel="noopener noreferrer" class="ss-citation-link">
+              <span class="ss-citation-name">${this.escapeHtml(citation.name)}</span>
+              <span class="ss-arrow">→</span>
+            </a>
+          `).join('')}
+        </div>
+        
+        <p class="ss-disclaimer">
+          ⚕️ This is informational only. Always consult a healthcare provider for medical advice.
+        </p>
+        
+        ${data.from_cache ? '<p class="ss-cache-note">Previously checked result</p>' : ''}
+      </div>
+    `;
+    
+    this.attachModalHandlers(modal);
+    this.showModal(modal);
+  }
+  
+  showProductResults(data) {
+    const modal = this.createModal();
+    
+    modal.innerHTML = `
+      <div class="ss-modal-content ss-product">
+        <div class="ss-modal-header">
+          <h3>🛒 Compare Before You Buy</h3>
+          <button class="ss-close-btn" aria-label="Close">×</button>
+        </div>
+        
+        ${data.product_name ? `
+          <div class="ss-product-name">
+            ${this.escapeHtml(data.product_name)}
+          </div>
+        ` : ''}
+        
+        <p class="ss-advisory">${this.escapeHtml(data.advisory)}</p>
+        
+        ${data.risk_signals.length > 0 ? `
+          <div class="ss-risk-signals">
+            <p class="ss-risk-label">⚠️ We noticed on this page:</p>
+            <div class="ss-risk-chips">
+              ${data.risk_signals.map(signal => `
+                <span class="ss-risk-chip">${this.escapeHtml(this.formatRiskSignal(signal))}</span>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
+        
+        <div class="ss-compare-section">
+          <p class="ss-compare-label">Compare on trusted retailers:</p>
+          <div class="ss-retailer-buttons">
+            ${data.compare_links.map(link => `
+              <a href="${link.url}" target="_blank" rel="noopener noreferrer" class="ss-retailer-btn">
+                ${this.getRetailerIcon(link.retailer)}
+                <span>${this.escapeHtml(link.retailer)}</span>
+              </a>
+            `).join('')}
+          </div>
+        </div>
+        
+        ${data.from_cache ? '<p class="ss-cache-note">Previously checked result</p>' : ''}
+      </div>
+    `;
+    
+    this.attachModalHandlers(modal);
+    this.showModal(modal);
+  }
+  
+  showLoadingModal(message) {
+    const modal = this.createModal();
+    modal.innerHTML = `
+      <div class="ss-modal-content ss-loading">
+        <div class="ss-spinner"></div>
+        <p>${this.escapeHtml(message)}</p>
+      </div>
+    `;
+    
+    this.showModal(modal);
+    return modal;
+  }
+  
+  showErrorModal(scanType, error) {
+    const configs = {
+      'health': {
+        title: '🩺 Health Check Unavailable',
+        body: "We couldn't check health sources right now. Please try again or check the trusted medical sites directly.",
+        links: [
+          { name: 'CDC', url: 'https://www.cdc.gov' },
+          { name: 'NIH', url: 'https://www.nih.gov' },
+          { name: 'Mayo Clinic', url: 'https://www.mayoclinic.org' }
+        ]
+      },
+      'product': {
+        title: '🛒 Comparison Unavailable',
+        body: "We couldn't generate comparison links right now. Try searching directly on trusted retailers.",
+        links: [
+          { name: 'Amazon', url: 'https://www.amazon.com' },
+          { name: 'Target', url: 'https://www.target.com' },
+          { name: 'Walmart', url: 'https://www.walmart.com' }
+        ]
+      }
+    };
+    
+    const config = configs[scanType];
+    const modal = this.createModal();
+    
+    modal.innerHTML = `
+      <div class="ss-modal-content ss-error">
+        <div class="ss-modal-header">
+          <h3>${config.title}</h3>
+          <button class="ss-close-btn" aria-label="Close">×</button>
+        </div>
+        <p class="ss-error-body">${config.body}</p>
+        <div class="ss-fallback-links">
+          ${config.links.map(link => `
+            <a href="${link.url}" target="_blank" rel="noopener noreferrer">
+              ${this.escapeHtml(link.name)} →
+            </a>
+          `).join('')}
+        </div>
+        <button class="ss-retry-btn">Try Again</button>
+      </div>
+    `;
+    
+    this.attachModalHandlers(modal, scanType);
+    this.showModal(modal);
+  }
+  
+  // =========================================================================
+  // MODAL MANAGEMENT
+  // =========================================================================
+  
+  createModal() {
+    const modal = document.createElement('div');
+    modal.className = 'ss-modal-overlay';
+    return modal;
+  }
+  
+  showModal(modal) {
+    // Remove any existing modal
+    if (this.activeModal) {
+      this.activeModal.remove();
+    }
+    
+    // Add to shadow root
+    this.shadowRoot.appendChild(modal);
+    this.activeModal = modal;
+    
+    // Animate in
+    requestAnimationFrame(() => {
+      modal.classList.add('ss-visible');
+    });
+  }
+  
+  closeModal() {
+    if (this.activeModal) {
+      this.activeModal.classList.remove('ss-visible');
+      setTimeout(() => {
+        this.activeModal?.remove();
+        this.activeModal = null;
+      }, 200);
+    }
+  }
+  
+  attachModalHandlers(modal, scanType = null) {
+    // Close button
+    const closeBtn = modal.querySelector('.ss-close-btn');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', () => this.closeModal());
+    }
+    
+    // Click outside to close
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        this.closeModal();
+      }
+    });
+    
+    // Retry button
+    const retryBtn = modal.querySelector('.ss-retry-btn');
+    if (retryBtn && scanType) {
+      retryBtn.addEventListener('click', () => {
+        if (scanType === 'health') {
+          this.handleHealthScan();
+        } else if (scanType === 'product') {
+          this.handleProductScan();
+        }
+      });
+    }
+    
+    // Escape key to close
+    const handleEscape = (e) => {
+      if (e.key === 'Escape') {
+        this.closeModal();
+        document.removeEventListener('keydown', handleEscape);
+      }
+    };
+    document.addEventListener('keydown', handleEscape);
+  }
+  
+  // =========================================================================
+  // FORMATTING HELPERS
+  // =========================================================================
+  
+  formatVerdict(verdict) {
+    const labels = {
+      'safe': 'Generally Safe',
+      'mixed': 'Mixed Evidence',
+      'harmful': 'Potentially Harmful',
+      'uncertain': 'More Research Needed'
+    };
+    return labels[verdict] || verdict;
+  }
+  
+  formatRiskSignal(signal) {
+    const labels = {
+      'clickbait_headline': 'Sensational language',
+      'offsite_form': 'Unusual checkout',
+      'suspicious_domain': 'Unfamiliar website',
+      'aggressive_timer': 'Countdown timer',
+      'low_domain_rep': 'Unknown site',
+      'suspicious_tld': 'Suspicious domain',
+      'punycode_domain': 'Look-alike domain'
+    };
+    return labels[signal] || signal.replace(/_/g, ' ');
+  }
+  
+  getRetailerIcon(retailer) {
+    const icons = {
+      'Amazon': '📦',
+      'Target': '🎯',
+      'Walmart': '🏪',
+      'Google Shopping': '🔍'
+    };
+    return icons[retailer] || '🛍️';
+  }
+  
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+  
+  // =========================================================================
+  // STYLES
+  // =========================================================================
+  
+  addStyles() {
     const style = document.createElement('style');
     style.textContent = `
-      .scanner-chips {
-        display: none;
-        gap: 4px;
-        margin-top: 8px;
-      }
-      
-      .scanner-chips.visible {
-        display: flex;
-      }
-      
-      .scanner-chip {
-        display: inline-flex;
-        align-items: center;
-        padding: 4px 8px;
-        background: white;
-        border: 1px solid #e0e0e0;
-        border-radius: 12px;
-        font-size: 11px;
-        cursor: pointer;
-        transition: all 0.2s;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-      }
-      
-      .scanner-chip:hover {
-        background: #f5f5f5;
-        transform: translateY(-1px);
-        box-shadow: 0 2px 5px rgba(0,0,0,0.15);
-      }
-      
-      .scanner-chip.product {
-        border-color: #4caf50;
-        color: #2e7d32;
-      }
-      
-      .scanner-chip.health {
-        border-color: #2196f3;
-        color: #1565c0;
-      }
-      
-      .scanner-chip .icon {
-        margin-right: 4px;
-        font-size: 14px;
-      }
-      
-      .scanner-chip.loading {
-        opacity: 0.6;
-        cursor: wait;
-      }
-      
-      .scanner-chip.upgrade {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-      }
-      
-      /* Modal for results */
-      .scanner-modal {
-        display: none;
+      /* Modal Overlay */
+      .ss-modal-overlay {
         position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: rgba(0, 0, 0, 0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 2147483647;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+      }
+      
+      .ss-modal-overlay.ss-visible {
+        opacity: 1;
+      }
+      
+      /* Modal Content */
+      .ss-modal-content {
         background: white;
-        border-radius: 12px;
-        padding: 16px;
-        max-width: 320px;
-        box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-        z-index: 10001;
+        border-radius: 16px;
+        padding: 24px;
+        max-width: 480px;
+        width: 90%;
+        max-height: 80vh;
+        overflow-y: auto;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        transform: scale(0.9);
+        transition: transform 0.2s ease;
       }
       
-      .scanner-modal.visible {
-        display: block;
+      .ss-visible .ss-modal-content {
+        transform: scale(1);
       }
       
-      .modal-header {
+      /* Modal Header */
+      .ss-modal-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 12px;
-        padding-bottom: 8px;
-        border-bottom: 1px solid #e0e0e0;
+        margin-bottom: 16px;
+        padding-bottom: 12px;
+        border-bottom: 2px solid #e0e0e0;
       }
       
-      .modal-title {
-        font-size: 14px;
-        font-weight: 600;
-      }
-      
-      .modal-close {
-        cursor: pointer;
-        color: #999;
-        font-size: 18px;
-      }
-      
-      .product-match {
-        padding: 8px;
-        margin: 4px 0;
-        border: 1px solid #e0e0e0;
-        border-radius: 8px;
-      }
-      
-      .match-retailer {
+      .ss-modal-header h3 {
+        margin: 0;
+        font-size: 20px;
         font-weight: 600;
         color: #333;
       }
       
-      .match-price {
-        color: #4caf50;
-        font-weight: bold;
-      }
-      
-      .match-seller {
-        font-size: 11px;
+      .ss-close-btn {
+        background: none;
+        border: none;
+        font-size: 28px;
         color: #666;
+        cursor: pointer;
+        padding: 0;
+        width: 32px;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        transition: background 0.2s;
       }
       
-      .health-verdict {
-        padding: 8px;
+      .ss-close-btn:hover {
+        background: #f0f0f0;
+      }
+      
+      /* Health Results */
+      .ss-topic-badge {
+        background: #e3f2fd;
+        color: #1565c0;
+        padding: 8px 12px;
+        border-radius: 8px;
+        font-weight: 500;
+        margin-bottom: 12px;
+        font-size: 14px;
+      }
+      
+      .ss-verdict-badge {
+        padding: 10px 16px;
+        border-radius: 8px;
+        font-weight: 600;
+        margin-bottom: 16px;
+        text-align: center;
+        font-size: 16px;
+      }
+      
+      .ss-verdict-safe {
+        background: #e8f5e9;
+        color: #2e7d32;
+      }
+      
+      .ss-verdict-mixed {
+        background: #fff3e0;
+        color: #e65100;
+      }
+      
+      .ss-verdict-harmful {
+        background: #ffebee;
+        color: #c62828;
+      }
+      
+      .ss-verdict-uncertain {
+        background: #f5f5f5;
+        color: #616161;
+      }
+      
+      .ss-summary {
+        margin-bottom: 16px;
+      }
+      
+      .ss-bullet {
+        margin: 8px 0;
+        font-size: 15px;
+        line-height: 1.6;
+        color: #424242;
+      }
+      
+      .ss-citations {
+        margin-top: 20px;
+        padding-top: 16px;
+        border-top: 1px solid #e0e0e0;
+      }
+      
+      .ss-citations-label {
+        font-weight: 600;
+        margin-bottom: 12px;
+        color: #424242;
+        font-size: 14px;
+      }
+      
+      .ss-citation-link {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 12px;
+        background: #f5f5f5;
         border-radius: 8px;
         margin-bottom: 8px;
+        text-decoration: none;
+        color: #1976d2;
+        transition: all 0.2s;
       }
       
-      .verdict-mixed { background: #fff8e1; }
-      .verdict-promising { background: #e8f5e9; }
-      .verdict-not_supported { background: #ffebee; }
-      .verdict-harmful { background: #ffcdd2; }
-      
-      .health-bullet {
-        padding: 4px 0;
-        font-size: 12px;
-        line-height: 1.4;
+      .ss-citation-link:hover {
+        background: #e3f2fd;
+        transform: translateX(4px);
       }
       
-      .health-source {
+      .ss-citation-name {
+        font-weight: 500;
+      }
+      
+      .ss-arrow {
+        font-size: 18px;
+      }
+      
+      .ss-disclaimer {
+        margin-top: 16px;
+        padding: 12px;
+        background: #fff9c4;
+        border-radius: 8px;
+        font-size: 13px;
+        color: #827717;
+        line-height: 1.5;
+      }
+      
+      /* Product Results */
+      .ss-product-name {
+        font-size: 18px;
+        font-weight: 600;
+        color: #333;
+        margin-bottom: 12px;
+        padding: 12px;
+        background: #f5f5f5;
+        border-radius: 8px;
+      }
+      
+      .ss-advisory {
+        font-size: 15px;
+        color: #424242;
+        margin-bottom: 16px;
+        line-height: 1.6;
+      }
+      
+      .ss-risk-signals {
+        margin-bottom: 20px;
+        padding: 12px;
+        background: #fff3e0;
+        border-radius: 8px;
+      }
+      
+      .ss-risk-label {
+        font-weight: 600;
+        color: #e65100;
+        margin-bottom: 8px;
+        font-size: 14px;
+      }
+      
+      .ss-risk-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      
+      .ss-risk-chip {
         display: inline-block;
-        padding: 2px 6px;
-        margin: 2px;
+        padding: 4px 10px;
+        background: white;
+        border: 1px solid #ffb74d;
+        border-radius: 12px;
+        font-size: 12px;
+        color: #e65100;
+      }
+      
+      .ss-compare-section {
+        margin-top: 20px;
+        padding-top: 16px;
+        border-top: 1px solid #e0e0e0;
+      }
+      
+      .ss-compare-label {
+        font-weight: 600;
+        margin-bottom: 12px;
+        color: #424242;
+        font-size: 14px;
+      }
+      
+      .ss-retailer-buttons {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+      
+      .ss-retailer-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 12px;
+        background: white;
+        border: 2px solid #e0e0e0;
+        border-radius: 8px;
+        text-decoration: none;
+        color: #424242;
+        font-weight: 500;
+        font-size: 14px;
+        transition: all 0.2s;
+      }
+      
+      .ss-retailer-btn:hover {
+        border-color: #1976d2;
+        background: #e3f2fd;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      }
+      
+      /* Loading State */
+      .ss-loading {
+        text-align: center;
+        padding: 40px 24px;
+      }
+      
+      .ss-spinner {
+        width: 48px;
+        height: 48px;
+        border: 4px solid #e0e0e0;
+        border-top-color: #1976d2;
+        border-radius: 50%;
+        animation: ss-spin 0.8s linear infinite;
+        margin: 0 auto 16px;
+      }
+      
+      @keyframes ss-spin {
+        to { transform: rotate(360deg); }
+      }
+      
+      .ss-loading p {
+        color: #666;
+        font-size: 15px;
+      }
+      
+      /* Error State */
+      .ss-error-body {
+        font-size: 15px;
+        color: #424242;
+        line-height: 1.6;
+        margin-bottom: 16px;
+      }
+      
+      .ss-fallback-links {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      
+      .ss-fallback-links a {
+        padding: 10px 12px;
+        background: #f5f5f5;
+        border-radius: 8px;
+        text-decoration: none;
+        color: #1976d2;
+        font-weight: 500;
+        transition: all 0.2s;
+      }
+      
+      .ss-fallback-links a:hover {
+        background: #e3f2fd;
+      }
+      
+      .ss-retry-btn {
+        width: 100%;
+        padding: 12px;
+        background: #1976d2;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 15px;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      
+      .ss-retry-btn:hover {
+        background: #1565c0;
+      }
+      
+      /* Cache Note */
+      .ss-cache-note {
+        margin-top: 12px;
+        font-size: 12px;
+        color: #9e9e9e;
+        text-align: center;
+      }
+      
+      /* Scrollbar Styling */
+      .ss-modal-content::-webkit-scrollbar {
+        width: 8px;
+      }
+      
+      .ss-modal-content::-webkit-scrollbar-track {
         background: #f5f5f5;
         border-radius: 4px;
-        font-size: 11px;
-        color: #1976d2;
-        text-decoration: none;
       }
       
-      .health-source:hover {
-        background: #e3f2fd;
+      .ss-modal-content::-webkit-scrollbar-thumb {
+        background: #bdbdbd;
+        border-radius: 4px;
+      }
+      
+      .ss-modal-content::-webkit-scrollbar-thumb:hover {
+        background: #9e9e9e;
       }
     `;
     
     this.shadowRoot.appendChild(style);
-    
-    // Create scanner chip container
-    this.container = document.createElement('div');
-    this.container.className = 'scanner-chips';
-    
-    // Will be populated based on context
-    this.shadowRoot.querySelector('.badge-container').appendChild(this.container);
-    
-    // Create modal for results
-    this.modal = document.createElement('div');
-    this.modal.className = 'scanner-modal';
-    this.shadowRoot.appendChild(this.modal);
-    
-    // Check context on load
-    this.updateContext();
-    
-    // Re-check on significant DOM changes
-    this.observePageChanges();
-  }
-
-  updateContext() {
-    const context = this.scanner.quickContextProbe();
-    
-    this.container.innerHTML = '';
-    this.container.classList.remove('visible');
-    
-    // Show chips if high confidence
-    if (context.product > 0.7) {
-      this.addProductChip();
-      this.container.classList.add('visible');
-    }
-    
-    if (context.health > 0.7) {
-      this.addHealthChip();
-      this.container.classList.add('visible');
-    }
-    
-    // Debug mode shows all contexts
-    if (window.SS_DEBUG) {
-      console.log('SafeSignal Context:', context);
-      if (context.product > 0.5 || context.health > 0.5) {
-        this.container.classList.add('visible');
-      }
-    }
-  }
-
-  addProductChip() {
-    const chip = document.createElement('button');
-    chip.className = 'scanner-chip product';
-    chip.innerHTML = `
-      <span class="icon">🛍️</span>
-      <span>Find Safer Deals</span>
-    `;
-    
-    chip.addEventListener('click', async () => {
-      await this.handleProductScan(chip);
-    });
-    
-    this.container.appendChild(chip);
-  }
-
-  addHealthChip() {
-    const chip = document.createElement('button');
-    chip.className = 'scanner-chip health';
-    chip.innerHTML = `
-      <span class="icon">🔬</span>
-      <span>Health Fact Check</span>
-    `;
-    
-    chip.addEventListener('click', async () => {
-      await this.handleHealthScan(chip);
-    });
-    
-    this.container.appendChild(chip);
-  }
-
-  async handleProductScan(chip) {
-    chip.classList.add('loading');
-    chip.innerHTML = `<span class="icon">⏳</span><span>Scanning...</span>`;
-    
-    try {
-      const result = await this.scanner.scanProduct();
-      
-      if (result.error) {
-        this.showError(result.error);
-      } else {
-        this.showProductResults(result);
-      }
-    } catch (error) {
-      this.showError('Could not scan for products');
-    } finally {
-      chip.classList.remove('loading');
-      chip.innerHTML = `<span class="icon">🛍️</span><span>Find Safer Deals</span>`;
-    }
-  }
-
-  async handleHealthScan(chip) {
-    chip.classList.add('loading');
-    chip.innerHTML = `<span class="icon">⏳</span><span>Checking...</span>`;
-    
-    try {
-      const result = await this.scanner.scanHealth();
-      
-      if (result.error) {
-        this.showError(result.error);
-      } else {
-        this.showHealthResults(result);
-      }
-    } catch (error) {
-      this.showError('Could not check health claims');
-    } finally {
-      chip.classList.remove('loading');
-      chip.innerHTML = `<span class="icon">🔬</span><span>Health Fact Check</span>`;
-    }
-  }
-
-  showProductResults(result) {
-    this.modal.innerHTML = `
-      <div class="modal-header">
-        <span class="modal-title">🛍️ Safer Deals Found</span>
-        <span class="modal-close">×</span>
-      </div>
-      <div class="modal-body">
-        ${result.matches.map(match => `
-          <div class="product-match">
-            <div class="match-retailer">${match.retailer}</div>
-            <div class="match-price">$${match.price.toFixed(2)}</div>
-            <div class="match-seller">Sold by: ${match.seller}</div>
-            <a href="${match.url}" target="_blank">View →</a>
-          </div>
-        `).join('')}
-        ${result.notes.map(note => `
-          <div style="font-size: 11px; color: #666; margin-top: 8px;">
-            ℹ️ ${note}
-          </div>
-        `).join('')}
-      </div>
-    `;
-    
-    this.showModal();
-  }
-
-  showHealthResults(result) {
-    const verdictClass = `verdict-${result.verdict.replace('_', '')}`;
-    
-    this.modal.innerHTML = `
-      <div class="modal-header">
-        <span class="modal-title">🔬 Health Fact Check</span>
-        <span class="modal-close">×</span>
-      </div>
-      <div class="modal-body">
-        <div class="health-verdict ${verdictClass}">
-          <strong>${result.topic}</strong><br>
-          Verdict: ${result.verdict.replace('_', ' ')}
-        </div>
-        <div class="health-bullets">
-          ${result.bullets.map(bullet => `
-            <div class="health-bullet">• ${bullet}</div>
-          `).join('')}
-        </div>
-        <div class="health-sources">
-          <div style="font-size: 11px; color: #666; margin: 8px 0;">Trusted Sources:</div>
-          ${result.sources.map(source => `
-            <a href="${source.url}" target="_blank" class="health-source">
-              ${source.name}
-            </a>
-          `).join('')}
-        </div>
-        ${result.supplement_flag ? `
-          <div style="font-size: 11px; color: #ff6b35; margin-top: 8px;">
-            ⚠️ Note: Supplement claims are less regulated by FDA
-          </div>
-        ` : ''}
-      </div>
-    `;
-    
-    this.showModal();
-  }
-
-  showError(message) {
-    this.modal.innerHTML = `
-      <div class="modal-header">
-        <span class="modal-title">⚠️ Notice</span>
-        <span class="modal-close">×</span>
-      </div>
-      <div class="modal-body">
-        <p>${message}</p>
-      </div>
-    `;
-    
-    this.showModal();
-  }
-
-  showModal() {
-    this.modal.classList.add('visible');
-    
-    // Close handler
-    const closeBtn = this.modal.querySelector('.modal-close');
-    if (closeBtn) {
-      closeBtn.addEventListener('click', () => {
-        this.modal.classList.remove('visible');
-      });
-    }
-    
-    // Close on outside click
-    setTimeout(() => {
-      const closeOnOutside = (e) => {
-        if (!this.modal.contains(e.target)) {
-          this.modal.classList.remove('visible');
-          document.removeEventListener('click', closeOnOutside);
-        }
-      };
-      document.addEventListener('click', closeOnOutside);
-    }, 100);
-  }
-
-  observePageChanges() {
-    // Watch for significant DOM changes
-    const observer = new MutationObserver(() => {
-      // Debounce updates
-      clearTimeout(this.updateTimeout);
-      this.updateTimeout = setTimeout(() => {
-        this.updateContext();
-      }, 1000);
-    });
-    
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: false,
-      characterData: false
-    });
   }
 }
 
-// =========================================================================
-// API CLIENT INTEGRATION
-// =========================================================================
-
-class APIClient {
-  constructor(baseURL = 'http://localhost:8000') {
-    this.baseURL = baseURL;
-    this.token = null;
-  }
-
-  async post(endpoint, data) {
-    const response = await fetch(this.baseURL + endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(this.token && { 'Authorization': `Bearer ${this.token}` })
-      },
-      body: JSON.stringify(data)
-    });
-
-    if (!response.ok) {
-      const error = new Error(`API Error: ${response.statusText}`);
-      error.code = response.status === 504 ? 'TIMEOUT' : 'ERROR';
-      throw error;
-    }
-
-    return response.json();
-  }
-}
-
-// =========================================================================
-// INITIALIZATION
-// =========================================================================
-
-function initializeScanners(shadowRoot, apiBaseURL = 'http://localhost:8000') {
-  // Create API client
-  const apiClient = new APIClient(apiBaseURL);
-  
-  // Create scanner
-  const scanner = new PageScanner(apiClient);
-  
-  // Create UI
-  const scannerUI = new ScannerUI(scanner, shadowRoot);
-  
-  // Export for debugging
-  window.SafeSignalScanner = {
-    scanner,
-    ui: scannerUI,
-    debug: () => {
-      const context = scanner.quickContextProbe();
-      console.log('Context:', context);
-      console.log('Product hints:', scanner.extractProductHints());
-      console.log('Health hints:', scanner.extractHealthHints());
-    }
-  };
-  
-  return { scanner, scannerUI };
-}
-
-// =========================================================================
+// ============================================================================
 // EXPORTS
-// =========================================================================
+// ============================================================================
 
-// For module environments (webpack, etc)
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = {
-    PageScanner,
-    ScannerUI,
-    APIClient,
-    initializeScanners
-  };
-}
-
-// For browser global
-if (typeof window !== 'undefined') {
-  window.SafeSignalScanners = {
-    PageScanner,
-    ScannerUI,
-    APIClient,
-    initializeScanners
-  };
-}
+export { PageScanner, ScannerUI, APIClient };

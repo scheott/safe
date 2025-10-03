@@ -1,556 +1,438 @@
-# api/scan_endpoints.py
-"""
-Phase 2.5: Product & Health Scan Endpoints
-Fast mode scanners without LLM for SafeSignal MVP
-"""
+# src/scan_endpoints.py
+# Phase 2.5 - Health & Product Scanning Endpoints
+# Single-tier model: All users get LLM summaries (no free/paid split yet)
 
 import asyncio
-import hashlib
+import time
 import json
-import re
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
-from urllib.parse import quote_plus, urlparse
+import os
+import logging
+from typing import List, Dict, Literal, Optional
+from urllib.parse import quote_plus
 
 import httpx
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, Field
-from fuzzywuzzy import fuzz
-from cachetools import TTLCache
+from bs4 import BeautifulSoup
+from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException
+from openai import AsyncOpenAI
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
-# DATA MODELS
+# RESPONSE MODELS (Stable schemas for Chrome extension)
 # ============================================================================
 
-class ProductHints(BaseModel):
-    title: str = Field(..., max_length=120)
-    brand: Optional[str] = Field(None, max_length=40)
-    model: Optional[str] = None
-    upc: Optional[str] = None
-    price: Optional[float] = None
-    domPath: Optional[Dict[str, str]] = None
-
-class ProductScanRequest(BaseModel):
-    url: str
-    hints: ProductHints
-    mode: str = "fast"  # fast | full
-
-class ProductMatch(BaseModel):
-    retailer: str
-    title: str
-    price: float
-    seller: str
-    url: str
-    shipping: Optional[float] = None
-    rating: Optional[float] = None
-    trust_score: float = 1.0
-
-class ProductScanResponse(BaseModel):
-    query: Dict[str, Optional[str]]
-    matches: List[ProductMatch]
-    best: Optional[ProductMatch]
-    notes: List[str]
-    confidence: float
-    ttl_sec: int = 1800
-
-class HealthClaim(BaseModel):
-    text: str = Field(..., max_length=200)
-    confidence: float = 0.8
-
-class HealthHints(BaseModel):
-    claims: List[str] = Field(..., max_items=3)
-    topic: Optional[str] = None
-    excerpt: Optional[str] = Field(None, max_length=400)
-    domPath: Optional[Dict[str, str]] = None
-
-class HealthScanRequest(BaseModel):
-    url: str
-    hints: HealthHints
-    mode: str = "fast"
-
-class HealthSource(BaseModel):
+class HealthCitation(BaseModel):
     name: str
     url: str
-    tier: str  # primary | secondary
-    excerpt: Optional[str] = None
 
 class HealthScanResponse(BaseModel):
     topic: str
-    verdict: str  # mixed | promising | not_supported | harmful | needs_context
+    verdict: Literal["safe", "mixed", "harmful", "uncertain"]
     bullets: List[str]
-    sources: List[HealthSource]
-    supplement_flag: bool = False
-    confidence: float
-    ttl_sec: int = 604800
+    citations: List[HealthCitation]
+    latency_ms: int
+    from_cache: bool
+
+class CompareLink(BaseModel):
+    retailer: str
+    url: str
+
+class ProductScanResponse(BaseModel):
+    product_name: Optional[str]
+    advisory: str
+    risk_signals: List[str]
+    compare_links: List[CompareLink]
+    latency_ms: int
+    from_cache: bool
 
 # ============================================================================
-# RETAILER DATA & HEALTH SOURCES
+# HEALTH SCANNER - Grounded LLM summaries from trusted sources
 # ============================================================================
 
-TRUSTED_RETAILERS = {
-    "amazon": {
-        "domain": "amazon.com",
-        "search_url": "https://www.amazon.com/s?k={query}",
-        "trust_score": 0.95,
-        "first_party_sellers": ["Amazon", "Amazon.com"]
-    },
-    "walmart": {
-        "domain": "walmart.com", 
-        "search_url": "https://www.walmart.com/search?q={query}",
-        "trust_score": 0.95,
-        "first_party_sellers": ["Walmart", "Walmart.com"]
-    },
-    "target": {
-        "domain": "target.com",
-        "search_url": "https://www.target.com/s?searchTerm={query}",
-        "trust_score": 0.95,
-        "first_party_sellers": ["Target"]
-    },
-    "bestbuy": {
-        "domain": "bestbuy.com",
-        "search_url": "https://www.bestbuy.com/site/searchpage.jsp?st={query}",
-        "trust_score": 0.95,
-        "first_party_sellers": ["Best Buy"]
-    }
+TRUSTED_SOURCES = {
+    "CDC": "https://search.cdc.gov/search/?query=",
+    "NIH": "https://search.nih.gov/search?q=",
+    "Mayo Clinic": "https://www.mayoclinic.org/search/search-results?q=",
+    "MedlinePlus": "https://medlineplus.gov/search.html?query="
 }
-
-HEALTH_SOURCES = {
-    "primary": {
-        "nih": {
-            "name": "NIH",
-            "domain": "nih.gov",
-            "search_url": "https://search.nih.gov/search?q={query}",
-            "weight": 1.0
-        },
-        "cdc": {
-            "name": "CDC", 
-            "domain": "cdc.gov",
-            "search_url": "https://search.cdc.gov/search/?query={query}",
-            "weight": 1.0
-        },
-        "who": {
-            "name": "WHO",
-            "domain": "who.int",
-            "search_url": "https://www.who.int/search?query={query}",
-            "weight": 0.95
-        },
-        "medlineplus": {
-            "name": "MedlinePlus",
-            "domain": "medlineplus.gov",
-            "search_url": "https://medlineplus.gov/search/?q={query}",
-            "weight": 0.95
-        },
-        "cochrane": {
-            "name": "Cochrane",
-            "domain": "cochrane.org",
-            "search_url": "https://www.cochrane.org/search?query={query}",
-            "weight": 1.0
-        }
-    },
-    "secondary": {
-        "mayo": {
-            "name": "Mayo Clinic",
-            "domain": "mayoclinic.org",
-            "search_url": "https://www.mayoclinic.org/search/search-results?q={query}",
-            "weight": 0.7
-        },
-        "webmd": {
-            "name": "WebMD",
-            "domain": "webmd.com",
-            "search_url": "https://www.webmd.com/search/search_results/default.aspx?query={query}",
-            "weight": 0.65
-        }
-    }
-}
-
-# Pre-indexed common health topics (sample)
-HEALTH_TOPICS_INDEX = {
-    "intermittent-fasting": {
-        "canonical": "intermittent fasting",
-        "aliases": ["if", "time restricted eating", "16:8"],
-        "category": "diet",
-        "verdict": "mixed",
-        "key_points": [
-            "Modest weight loss comparable to calorie restriction",
-            "May improve insulin sensitivity",
-            "Not recommended for certain conditions"
-        ]
-    },
-    "vitamin-d": {
-        "canonical": "vitamin D supplementation",
-        "aliases": ["vit d", "d3", "cholecalciferol"],
-        "category": "supplement",
-        "verdict": "promising",
-        "key_points": [
-            "Beneficial for deficiency states",
-            "May support bone health",
-            "Optimal dosing varies by individual"
-        ]
-    },
-    "keto-diet": {
-        "canonical": "ketogenic diet",
-        "aliases": ["keto", "low carb high fat", "lchf"],
-        "category": "diet",
-        "verdict": "mixed",
-        "key_points": [
-            "Effective for short-term weight loss",
-            "Potential therapeutic uses in epilepsy",
-            "Long-term safety concerns exist"
-        ]
-    }
-}
-
-# ============================================================================
-# SERVICES
-# ============================================================================
-
-class ProductScanner:
-    """Handles product detection and safer deal finding"""
-    
-    def __init__(self):
-        # Cache: (query_hash, retailer) -> results, TTL 30 min
-        self.cache = TTLCache(maxsize=1000, ttl=1800)
-        self.http = httpx.AsyncClient(timeout=3.0)
-    
-    def normalize_product_query(self, hints: ProductHints) -> Dict[str, str]:
-        """Normalize product info for matching"""
-        query = {}
-        
-        # Clean title
-        if hints.title:
-            # Remove common junk
-            title = re.sub(r'\s+', ' ', hints.title)
-            title = re.sub(r'[^\w\s\-\.]', '', title)
-            query['title'] = title.strip()[:80]
-        
-        # Brand normalization
-        if hints.brand:
-            brand = hints.brand.upper().replace('.', '').strip()
-            query['brand'] = brand
-        
-        # Model number
-        if hints.model:
-            model = re.sub(r'[^\w\-]', '', hints.model).upper()
-            query['model'] = model
-        
-        # UPC/EAN/GTIN
-        if hints.upc:
-            upc = re.sub(r'[^\d]', '', hints.upc)
-            if len(upc) in [8, 12, 13, 14]:  # Valid lengths
-                query['upc'] = upc
-        
-        return query
-    
-    def build_search_query(self, query: Dict[str, str]) -> str:
-        """Build optimized search string"""
-        # UPC takes priority
-        if query.get('upc'):
-            return query['upc']
-        
-        # Brand + model is strong signal
-        parts = []
-        if query.get('brand'):
-            parts.append(query['brand'])
-        if query.get('model'):
-            parts.append(query['model'])
-        elif query.get('title'):
-            # Extract key product terms
-            title_parts = query['title'].split()[:5]  # First 5 words
-            parts.extend(title_parts)
-        
-        return ' '.join(parts)
-    
-    async def search_retailer(
-        self, 
-        retailer_id: str, 
-        search_query: str,
-        original_query: Dict[str, str]
-    ) -> List[ProductMatch]:
-        """Search a single retailer (mock for MVP)"""
-        retailer = TRUSTED_RETAILERS.get(retailer_id)
-        if not retailer:
-            return []
-        
-        # In production, this would call retailer APIs or scrape
-        # For MVP, return mock matches based on fuzzy matching
-        
-        # Mock price generation
-        base_price = hash(search_query) % 200 + 50
-        
-        matches = []
-        
-        # Simulate finding 1-3 matches
-        for i in range(min(3, hash(retailer_id + search_query) % 4)):
-            seller = retailer['first_party_sellers'][0]
-            trust_score = 1.0
-            
-            # Sometimes simulate marketplace seller
-            if i > 0 and hash(f"{retailer_id}{i}") % 3 == 0:
-                seller = f"Seller_{i}"
-                trust_score = 0.6
-            
-            match = ProductMatch(
-                retailer=retailer_id.title(),
-                title=f"{original_query.get('title', 'Product')} - {retailer_id.title()}",
-                price=base_price + (i * 5),
-                seller=seller,
-                url=retailer['search_url'].format(query=quote_plus(search_query)),
-                shipping=0 if trust_score > 0.9 else 4.99,
-                trust_score=trust_score
-            )
-            matches.append(match)
-        
-        return matches
-    
-    async def scan(self, request: ProductScanRequest) -> ProductScanResponse:
-        """Main product scanning logic"""
-        # Normalize query
-        query = self.normalize_product_query(request.hints)
-        search_str = self.build_search_query(query)
-        
-        # Check cache
-        cache_key = hashlib.md5(f"{search_str}".encode()).hexdigest()
-        if cache_key in self.cache:
-            cached = self.cache[cache_key]
-            cached.ttl_sec = 1800  # Reset TTL
-            return cached
-        
-        # Search retailers in parallel
-        tasks = []
-        for retailer_id in ["amazon", "walmart", "target", "bestbuy"]:
-            tasks.append(
-                self.search_retailer(retailer_id, search_str, query)
-            )
-        
-        results = await asyncio.gather(*tasks)
-        all_matches = [m for r in results for m in r]
-        
-        # Sort by trust + price
-        all_matches.sort(key=lambda x: (x.trust_score, -x.price), reverse=True)
-        
-        # Take top 3
-        top_matches = all_matches[:3]
-        
-        # Find best deal (trusted seller + lowest price)
-        trusted_matches = [m for m in top_matches if m.trust_score > 0.8]
-        best = min(trusted_matches, key=lambda x: x.price) if trusted_matches else None
-        
-        # Build notes
-        notes = []
-        if best and best.trust_score > 0.9:
-            notes.append("Preferring first-party seller")
-        if any(m.trust_score < 0.7 for m in top_matches):
-            notes.append("Some marketplace sellers - verify before buying")
-        
-        response = ProductScanResponse(
-            query=query,
-            matches=top_matches,
-            best=best,
-            notes=notes,
-            confidence=0.85 if best else 0.6,
-            ttl_sec=1800
-        )
-        
-        # Cache result
-        self.cache[cache_key] = response
-        
-        return response
 
 class HealthScanner:
-    """Handles health claim detection and fact checking"""
-    
     def __init__(self):
-        # Cache by topic slug, TTL 7 days
-        self.cache = TTLCache(maxsize=500, ttl=604800)
-        self.http = httpx.AsyncClient(timeout=3.0)
-    
-    def detect_topic(self, hints: HealthHints) -> Tuple[str, float]:
-        """Detect health topic from claims"""
-        claims_text = ' '.join(hints.claims).lower()
-        
-        # Check pre-indexed topics
-        best_match = None
-        best_score = 0
-        
-        for topic_id, topic_data in HEALTH_TOPICS_INDEX.items():
-            score = 0
-            
-            # Check canonical name
-            if topic_data['canonical'].lower() in claims_text:
-                score = 0.9
-            
-            # Check aliases
-            for alias in topic_data['aliases']:
-                if alias.lower() in claims_text:
-                    score = max(score, 0.8)
-            
-            # Fuzzy match
-            fuzz_score = fuzz.partial_ratio(
-                topic_data['canonical'].lower(),
-                claims_text
-            ) / 100
-            score = max(score, fuzz_score * 0.7)
-            
-            if score > best_score:
-                best_score = score
-                best_match = topic_id
-        
-        # Fallback to extracted topic
-        if best_score < 0.5:
-            # Extract key medical terms
-            medical_terms = re.findall(
-                r'\b(vitamin|supplement|diet|therapy|treatment|cure|health|immune|'
-                r'cancer|diabetes|heart|brain|weight|covid|vaccine)\b',
-                claims_text,
-                re.I
-            )
-            if medical_terms:
-                best_match = medical_terms[0].lower()
-                best_score = 0.6
-        
-        return best_match or "general-health", best_score
-    
-    def detect_supplement(self, claims: List[str], topic: str) -> bool:
-        """Check if this is about supplements"""
-        supplement_keywords = [
-            'supplement', 'vitamin', 'mineral', 'herb', 'extract',
-            'capsule', 'tablet', 'dose', 'mg', 'iu', 'mcg'
-        ]
-        
-        claims_text = ' '.join(claims).lower()
-        
-        # Check keywords
-        for keyword in supplement_keywords:
-            if keyword in claims_text:
-                return True
-        
-        # Check topic category
-        if topic in HEALTH_TOPICS_INDEX:
-            if HEALTH_TOPICS_INDEX[topic].get('category') == 'supplement':
-                return True
-        
-        return False
-    
-    def assess_claims(self, claims: List[str], topic: str) -> str:
-        """Assess health claims for verdict"""
-        # Dangerous claim patterns
-        danger_patterns = [
-            r'cure.{0,10}(cancer|diabetes|alzheimer)',
-            r'(prevent|stop|reverse).{0,10}(aging|disease)',
-            r'miracle.{0,10}(cure|treatment|remedy)',
-            r'doctors hate',
-            r'one weird trick'
-        ]
-        
-        claims_text = ' '.join(claims).lower()
-        
-        # Check for dangerous claims
-        for pattern in danger_patterns:
-            if re.search(pattern, claims_text, re.I):
-                return "harmful"
-        
-        # Check pre-indexed verdicts
-        if topic in HEALTH_TOPICS_INDEX:
-            return HEALTH_TOPICS_INDEX[topic]['verdict']
-        
-        # Default assessment based on claim strength
-        strong_claims = ['cure', 'prevent', 'guaranteed', 'proven']
-        if any(word in claims_text for word in strong_claims):
-            return "not_supported"
-        
-        moderate_claims = ['may', 'might', 'could', 'support', 'help']
-        if any(word in claims_text for word in moderate_claims):
-            return "mixed"
-        
-        return "needs_context"
-    
-    async def fetch_sources(
-        self, 
-        topic: str, 
-        claims: List[str]
-    ) -> Tuple[List[HealthSource], List[str]]:
-        """Fetch relevant health sources"""
-        sources = []
-        bullets = []
-        
-        # Build search query
-        search_query = topic.replace('-', ' ')
-        
-        # Search primary sources first
-        for source_id, source_data in HEALTH_SOURCES['primary'].items():
-            url = source_data['search_url'].format(query=quote_plus(search_query))
-            
-            sources.append(HealthSource(
-                name=source_data['name'],
-                url=url,
-                tier='primary'
-            ))
-            
-            # Mock bullet points (in production, would fetch real content)
-            if source_id == 'cochrane' and topic == 'intermittent-fasting':
-                bullets.append("Cochrane: Modest weight loss in RCTs vs calorie restriction")
-            elif source_id == 'cdc':
-                bullets.append(f"CDC: Consult healthcare provider before major dietary changes")
-        
-        # Add secondary sources if needed
-        if len(bullets) < 3:
-            for source_id, source_data in HEALTH_SOURCES['secondary'].items():
-                url = source_data['search_url'].format(query=quote_plus(search_query))
-                
-                sources.append(HealthSource(
-                    name=source_data['name'],
-                    url=url,
-                    tier='secondary'
-                ))
-                
-                if len(sources) >= 5:
-                    break
-        
-        # Ensure we have at least 3 bullets
-        while len(bullets) < 3:
-            bullets.append(f"See trusted sources for evidence-based information")
-        
-        return sources[:5], bullets[:3]
-    
-    async def scan(self, request: HealthScanRequest) -> HealthScanResponse:
-        """Main health scanning logic"""
-        # Detect topic
-        topic, confidence = self.detect_topic(request.hints)
-        
-        # Check cache
-        cache_key = f"{topic}:{request.mode}"
-        if cache_key in self.cache:
-            cached = self.cache[cache_key]
-            cached.ttl_sec = 604800  # Reset TTL
-            return cached
-        
-        # Detect if supplement
-        is_supplement = self.detect_supplement(request.hints.claims, topic)
-        
-        # Assess claims
-        verdict = self.assess_claims(request.hints.claims, topic)
-        
-        # Fetch sources
-        sources, bullets = await self.fetch_sources(topic, request.hints.claims)
-        
-        # Adjust for supplements
-        if is_supplement and verdict not in ['harmful']:
-            bullets.append("Note: Supplement claims are less regulated by FDA")
-        
-        response = HealthScanResponse(
-            topic=topic.replace('-', ' ').title(),
-            verdict=verdict,
-            bullets=bullets,
-            sources=sources,
-            supplement_flag=is_supplement,
-            confidence=confidence,
-            ttl_sec=604800
+        self.cache = {}  # Simple dict cache with TTL
+        self.http_client = httpx.AsyncClient(
+            timeout=3.0,
+            follow_redirects=True,
+            headers={'User-Agent': 'SafeSignal/2.5 (Elder Safety Tool)'}
         )
         
-        # Cache result
-        self.cache[cache_key] = response
+        # Initialize OpenAI client
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            logger.warning("OPENAI_API_KEY not set - health summaries will fail")
+        self.openai = AsyncOpenAI(api_key=api_key) if api_key else None
         
-        return response
+    async def scan(self, url: str, hints: dict, mode: str = "fast") -> dict:
+        """
+        Scan for health information with grounded LLM summary.
+        
+        Args:
+            url: Page URL being analyzed
+            hints: Dict with 'title', 'claims_text', etc.
+            mode: 'fast' or 'full' (affects timeouts)
+            
+        Returns:
+            HealthScanResponse as dict
+        """
+        start = time.time()
+        
+        # Build cache key
+        topic_hint = hints.get("title", "") or hints.get("claims_text", "")
+        cache_key = f"health:{url}:{topic_hint[:50]}"
+        
+        # Check cache (30 min TTL)
+        cached = self._get_cache(cache_key)
+        if cached:
+            cached['from_cache'] = True
+            cached['latency_ms'] = int((time.time() - start) * 1000)
+            return cached
+        
+        # Extract topic from hints
+        topic = self._extract_topic(hints)
+        
+        # Build citation links (always present)
+        citations = [
+            {"name": name, "url": f"{base_url}{quote_plus(topic)}"}
+            for name, base_url in TRUSTED_SOURCES.items()
+        ]
+        
+        # Try to fetch and summarize
+        bullets = []
+        verdict = "uncertain"
+        
+        try:
+            # Fetch snippets from top 2 sources (CDC + NIH)
+            snippets = await self._fetch_snippets(topic, citations[:2], mode)
+            
+            if snippets and self.openai:
+                # Call LLM for grounded summary
+                bullets, verdict = await self._summarize_with_llm(topic, snippets, mode)
+            else:
+                # Fallback: couldn't fetch or no API key
+                bullets = [
+                    "We couldn't retrieve content from trusted sources right now.",
+                    f"Please check the links below for information about {topic}.",
+                    "If you have health concerns, consult a healthcare provider."
+                ]
+                verdict = "uncertain"
+                
+        except asyncio.TimeoutError:
+            logger.warning(f"Health scan timeout for {topic}")
+            bullets = [
+                "The scan took too long—our apologies.",
+                "Check the trusted sources below for reliable information."
+            ]
+            verdict = "uncertain"
+            
+        except Exception as e:
+            logger.error(f"Health scan failed for {topic}: {e}")
+            bullets = [
+                "Unable to generate a summary at this time.",
+                f"Check trusted medical sources for information about {topic}."
+            ]
+            verdict = "uncertain"
+        
+        latency_ms = int((time.time() - start) * 1000)
+        
+        result = {
+            "topic": topic,
+            "verdict": verdict,
+            "bullets": bullets,
+            "citations": citations,
+            "latency_ms": latency_ms,
+            "from_cache": False
+        }
+        
+        # Cache for 30 minutes
+        self._set_cache(cache_key, result, ttl=1800)
+        
+        return result
+    
+    def _extract_topic(self, hints: dict) -> str:
+        """Extract health topic from page hints"""
+        # Priority: title > claims_text > default
+        title = hints.get("title", "").strip()
+        claims = hints.get("claims_text", "").strip()
+        
+        topic = title if title else claims
+        
+        # Clean and truncate
+        if topic:
+            # Remove common noise words
+            noise = ["Learn about", "Information on", "What is", "How to"]
+            for n in noise:
+                if topic.startswith(n):
+                    topic = topic[len(n):].strip()
+            
+            topic = topic[:100]
+        
+        return topic if topic else "health information"
+    
+    async def _fetch_snippets(self, topic: str, citations: List[dict], mode: str) -> List[str]:
+        """Fetch text snippets from trusted medical sources"""
+        snippets = []
+        timeout = 2.0 if mode == "fast" else 3.5
+        
+        for citation in citations:
+            try:
+                response = await asyncio.wait_for(
+                    self.http_client.get(citation['url']),
+                    timeout=timeout
+                )
+                
+                if response.status_code == 200:
+                    snippet = self._extract_snippet(response.text)
+                    if snippet:
+                        snippets.append(f"[{citation['name']}]: {snippet}")
+                        
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout fetching {citation['name']}")
+            except Exception as e:
+                logger.warning(f"Failed to fetch {citation['name']}: {e}")
+        
+        return snippets
+    
+    def _extract_snippet(self, html: str, max_length: int = 400) -> str:
+        """Extract meaningful text snippet from HTML"""
+        try:
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            # Remove scripts, styles, navigation
+            for tag in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+                tag.decompose()
+            
+            # Get text
+            text = soup.get_text(separator=' ', strip=True)
+            
+            # Clean up whitespace
+            text = ' '.join(text.split())
+            
+            # Truncate
+            return text[:max_length] if text else ""
+            
+        except Exception as e:
+            logger.error(f"Failed to parse HTML: {e}")
+            return ""
+    
+    async def _summarize_with_llm(self, topic: str, snippets: List[str], mode: str) -> tuple:
+        """
+        Use LLM to create grounded summary from fetched sources.
+        
+        Returns:
+            (bullets: List[str], verdict: str)
+        """
+        timeout = 1.5 if mode == "fast" else 3.0
+        
+        prompt = f"""You are a medical information assistant helping elderly users understand health topics.
+
+TOPIC: {topic}
+
+TRUSTED SOURCES (only cite information from these):
+{chr(10).join(snippets)}
+
+INSTRUCTIONS:
+1. Provide 3-5 short, clear bullet points summarizing the key medical facts
+2. Use simple, plain language suitable for seniors (avoid jargon)
+3. Rate the overall consensus as: safe | mixed | harmful | uncertain
+4. ONLY cite information explicitly stated in the sources above
+5. If sources lack sufficient information, say "uncertain" and recommend consulting a doctor
+6. Never invent statistics, dosages, or medical advice not in the sources
+
+Respond ONLY with valid JSON:
+{{"bullets": ["First key fact in simple terms", "Second fact", "Third fact"], "verdict": "mixed"}}
+"""
+        
+        try:
+            response = await asyncio.wait_for(
+                self.openai.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                    max_tokens=300,
+                    temperature=0.3  # Lower temp for factual accuracy
+                ),
+                timeout=timeout
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            
+            bullets = result.get('bullets', [])
+            verdict = result.get('verdict', 'uncertain')
+            
+            # Validation
+            if not bullets or len(bullets) < 2:
+                raise ValueError("LLM returned insufficient bullets")
+            
+            # Ensure verdict is valid
+            if verdict not in ['safe', 'mixed', 'harmful', 'uncertain']:
+                verdict = 'uncertain'
+            
+            return bullets, verdict
+            
+        except asyncio.TimeoutError:
+            logger.warning(f"LLM timeout for topic: {topic}")
+            raise
+        except Exception as e:
+            logger.error(f"LLM summarization failed: {e}")
+            raise
+    
+    def _get_cache(self, key: str) -> Optional[dict]:
+        """Get cached result if not expired"""
+        if key in self.cache:
+            entry = self.cache[key]
+            if time.time() < entry['expires']:
+                return entry['data']
+            else:
+                del self.cache[key]
+        return None
+    
+    def _set_cache(self, key: str, data: dict, ttl: int):
+        """Cache result with TTL"""
+        self.cache[key] = {
+            'data': data,
+            'expires': time.time() + ttl
+        }
+        
+        # Simple cache cleanup: remove if > 1000 entries
+        if len(self.cache) > 1000:
+            # Remove oldest 20%
+            sorted_keys = sorted(self.cache.keys(), key=lambda k: self.cache[k]['expires'])
+            for k in sorted_keys[:200]:
+                del self.cache[k]
+
+# ============================================================================
+# PRODUCT SCANNER - Compare links + risk signals (no prices)
+# ============================================================================
+
+RETAILER_SEARCH_URLS = {
+    "Amazon": "https://www.amazon.com/s?k=",
+    "Target": "https://www.target.com/s?searchTerm=",
+    "Walmart": "https://www.walmart.com/search?q=",
+    "Google Shopping": "https://www.google.com/search?tbm=shop&q="
+}
+
+class ProductScanner:
+    def __init__(self, tier0_analyzer):
+        self.cache = {}
+        self.tier0 = tier0_analyzer
+        
+    async def scan(self, url: str, hints: dict, mode: str = "fast") -> dict:
+        """
+        Scan for product comparison opportunities.
+        
+        Args:
+            url: Product page URL
+            hints: Dict with 'product_name', 'title', etc.
+            mode: 'fast' or 'full'
+            
+        Returns:
+            ProductScanResponse as dict
+        """
+        start = time.time()
+        cache_key = f"product:{url}"
+        
+        # Check cache
+        cached = self._get_cache(cache_key)
+        if cached:
+            cached['from_cache'] = True
+            cached['latency_ms'] = int((time.time() - start) * 1000)
+            return cached
+        
+        # Extract product name from hints
+        product_name = hints.get("product_name", "") or hints.get("title", "")
+        product_name = product_name.strip()[:100]
+        
+        # Build compare links for trusted retailers
+        search_query = product_name if product_name else "product search"
+        compare_links = [
+            {"retailer": name, "url": f"{base_url}{quote_plus(search_query)}"}
+            for name, base_url in RETAILER_SEARCH_URLS.items()
+        ]
+        
+        # Get risk signals from Tier-0 analysis
+        risk_signals = []
+        advisory = "Compare prices on trusted retailers before purchasing."
+        
+        try:
+            # Run quick Tier-0 check to get page verdict
+            tier0_result = await self.tier0.analyze(url)
+            
+            # Extract relevant risk reasons
+            relevant_risks = {
+                'clickbait_headline',
+                'offsite_form',
+                'suspicious_domain',
+                'aggressive_timer',
+                'low_domain_rep',
+                'suspicious_tld',
+                'punycode_domain'
+            }
+            
+            risk_signals = [
+                reason for reason in tier0_result.reasons
+                if reason in relevant_risks
+            ]
+            
+            # Adjust advisory based on verdict
+            if tier0_result.verdict == "danger":
+                advisory = "⚠️ High-risk site detected. We strongly recommend comparing on trusted retailers."
+            elif tier0_result.verdict == "warning":
+                advisory = "Use caution—this site has some concerning signals. Compare on trusted retailers."
+            elif tier0_result.verdict == "ok":
+                advisory = "This site looks reputable, but it's always smart to compare prices."
+                
+        except Exception as e:
+            logger.warning(f"Tier-0 check failed for product scan: {e}")
+            # Continue with default advisory
+        
+        latency_ms = int((time.time() - start) * 1000)
+        
+        result = {
+            "product_name": product_name if product_name else None,
+            "advisory": advisory,
+            "risk_signals": risk_signals,
+            "compare_links": compare_links,
+            "latency_ms": latency_ms,
+            "from_cache": False
+        }
+        
+        # Cache for 30 minutes
+        self._set_cache(cache_key, result, ttl=1800)
+        
+        return result
+    
+    def _get_cache(self, key: str) -> Optional[dict]:
+        """Get cached result if not expired"""
+        if key in self.cache:
+            entry = self.cache[key]
+            if time.time() < entry['expires']:
+                return entry['data']
+            else:
+                del self.cache[key]
+        return None
+    
+    def _set_cache(self, key: str, data: dict, ttl: int):
+        """Cache result with TTL"""
+        self.cache[key] = {
+            'data': data,
+            'expires': time.time() + ttl
+        }
+        
+        # Simple cleanup
+        if len(self.cache) > 500:
+            sorted_keys = sorted(self.cache.keys(), key=lambda k: self.cache[k]['expires'])
+            for k in sorted_keys[:100]:
+                del self.cache[k]
 
 # ============================================================================
 # API ROUTES
@@ -558,108 +440,103 @@ class HealthScanner:
 
 router = APIRouter(prefix="/api/scan", tags=["scanning"])
 
-# Service instances
-product_scanner = ProductScanner()
-health_scanner = HealthScanner()
-
-@router.post("/product", response_model=ProductScanResponse)
-async def scan_product(request: ProductScanRequest):
-    """
-    Scan for safer product deals
-    - Detects product from hints
-    - Searches trusted retailers
-    - Returns price comparisons
-    """
-    try:
-        # Fast mode timeout
-        if request.mode == "fast":
-            return await asyncio.wait_for(
-                product_scanner.scan(request),
-                timeout=1.5
-            )
-        else:
-            # Full mode allows more time
-            return await product_scanner.scan(request)
-            
-    except asyncio.TimeoutError:
-        # Return partial results on timeout
-        return ProductScanResponse(
-            query=product_scanner.normalize_product_query(request.hints),
-            matches=[],
-            best=None,
-            notes=["Search taking longer than expected"],
-            confidence=0.3,
-            ttl_sec=300
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# Global scanner instances (initialized in main.py)
+health_scanner = None
+product_scanner = None
 
 @router.post("/health", response_model=HealthScanResponse)
-async def scan_health(request: HealthScanRequest):
+async def scan_health(request: dict):
     """
-    Scan for health fact checking
-    - Detects health claims
-    - Checks trusted medical sources
-    - Returns evidence-based assessment
-    """
-    try:
-        # Fast mode timeout
-        if request.mode == "fast":
-            return await asyncio.wait_for(
-                health_scanner.scan(request),
-                timeout=1.5
-            )
-        else:
-            # Full mode allows more time
-            return await health_scanner.scan(request)
-            
-    except asyncio.TimeoutError:
-        # Return partial results on timeout
-        topic, _ = health_scanner.detect_topic(request.hints)
-        return HealthScanResponse(
-            topic=topic,
-            verdict="needs_context",
-            bullets=["Analysis in progress", "Check trusted sources below"],
-            sources=[
-                HealthSource(
-                    name="CDC",
-                    url=f"https://search.cdc.gov/search/?query={quote_plus(topic)}",
-                    tier="primary"
-                ),
-                HealthSource(
-                    name="NIH",
-                    url=f"https://search.nih.gov/search?q={quote_plus(topic)}",
-                    tier="primary"
-                )
-            ],
-            supplement_flag=False,
-            confidence=0.3,
-            ttl_sec=300
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/health/topics")
-async def list_health_topics():
-    """List pre-indexed health topics for debugging"""
-    return {
-        "topics": list(HEALTH_TOPICS_INDEX.keys()),
-        "count": len(HEALTH_TOPICS_INDEX)
+    Scan for health information with grounded LLM summary.
+    
+    Request body:
+    {
+        "url": "https://page-url.com",
+        "hints": {
+            "title": "Page title",
+            "claims_text": "Snippet of health claims"
+        },
+        "mode": "fast"  // or "full"
     }
+    
+    Returns bullets + citations from trusted medical sources.
+    """
+    if not health_scanner:
+        raise HTTPException(status_code=500, detail="Health scanner not initialized")
+    
+    url = request.get("url")
+    if not url:
+        raise HTTPException(status_code=400, detail="URL required")
+    
+    hints = request.get("hints", {})
+    mode = request.get("mode", "fast")
+    
+    result = await health_scanner.scan(url, hints, mode)
+    return result
 
-@router.get("/product/retailers")
-async def list_retailers():
-    """List supported retailers for debugging"""
+@router.post("/product", response_model=ProductScanResponse)
+async def scan_product(request: dict):
+    """
+    Scan for product comparison opportunities.
+    
+    Request body:
+    {
+        "url": "https://product-page.com",
+        "hints": {
+            "product_name": "Wireless earbuds",
+            "title": "Page title"
+        },
+        "mode": "fast"
+    }
+    
+    Returns compare links + risk signals (no prices).
+    """
+    if not product_scanner:
+        raise HTTPException(status_code=500, detail="Product scanner not initialized")
+    
+    url = request.get("url")
+    if not url:
+        raise HTTPException(status_code=400, detail="URL required")
+    
+    hints = request.get("hints", {})
+    mode = request.get("mode", "fast")
+    
+    result = await product_scanner.scan(url, hints, mode)
+    return result
+
+@router.get("/status")
+async def scanner_status():
+    """Debug endpoint - check scanner health"""
     return {
-        "retailers": list(TRUSTED_RETAILERS.keys()),
-        "count": len(TRUSTED_RETAILERS)
+        "health_scanner": {
+            "active": health_scanner is not None,
+            "cache_size": len(health_scanner.cache) if health_scanner else 0,
+            "openai_configured": health_scanner.openai is not None if health_scanner else False
+        },
+        "product_scanner": {
+            "active": product_scanner is not None,
+            "cache_size": len(product_scanner.cache) if product_scanner else 0
+        }
     }
 
 # ============================================================================
-# INTEGRATION WITH MAIN APP
+# INITIALIZATION HELPER
 # ============================================================================
 
-def register_scan_endpoints(app):
-    """Register scan endpoints with the main FastAPI app"""
+def init_scanners(app, tier0_analyzer):
+    """
+    Initialize scanner instances and register routes.
+    Called from main.py during startup.
+    
+    Args:
+        app: FastAPI app instance
+        tier0_analyzer: Tier0Analyzer instance for risk detection
+    """
+    global health_scanner, product_scanner
+    
+    health_scanner = HealthScanner()
+    product_scanner = ProductScanner(tier0_analyzer)
+    
     app.include_router(router)
-    return app
+    
+    logger.info("✅ Health and Product scanners initialized")

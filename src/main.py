@@ -26,7 +26,14 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc"
 )
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # This looks for .env in the current directory
+except ImportError:
+    pass
 
+# Then access it
+api_key = os.getenv("OPENAI_API_KEY")
 # CORS middleware for extension requests
 app.add_middleware(
     CORSMiddleware,
