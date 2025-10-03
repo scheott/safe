@@ -978,11 +978,11 @@ class ScannerUI {
 
 /* harmony import */ var _scanners_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(63);
 /* module decorator */ module = __webpack_require__.hmd(module);
-// SafeSignal Content Script - Minimal Scanner Integration
-// Version: 4.1 + Scanner Wiring Only
+// SafeSignal Content Script - Fixed Visibility Edition + Scanner Wiring
+// Version: 4.1-visibility-fix + scanners
 
-const SAFESIGNAL_BUILD = 'content-2025-09-29-v4.1-scanner-wired';
-const API_BASE_URL = 'http://localhost:8000'; // ← ADDED FOR SCANNERS
+const SAFESIGNAL_BUILD = 'content-2025-10-03-v4.1-scanner-wired';
+const API_BASE_URL = 'http://localhost:8000';
 
 console.info('[SafeSignal] Build:', SAFESIGNAL_BUILD);
 
@@ -1008,13 +1008,13 @@ class SafeSignalBadge {
         this.sizeMode = 'large';
         
         // SPA detection
-        this.currentUrl = null;
+        this.currentUrl = null; // Start as null so first check always runs
         this.mutationObserver = null;
         this.pageDebounceTimer = null;
         this.lastCheckByUrl = new Map();
         this.checkCooldown = 30 * 60 * 1000;
         
-        // ← ADDED: Scanner services
+        // ← ADDED: Scanner services (initialized after Shadow DOM creation)
         this.apiClient = null;
         this.scanner = null;
         this.scannerUI = null;
@@ -1038,7 +1038,7 @@ class SafeSignalBadge {
         await this.loadUserPreferences();
         this.createBadge();
         
-        // ← ADDED: Initialize scanners
+        // ← ADDED: Initialize scanners after badge creation (needs this.root)
         this.initScanners();
         
         this.initSpaDetection();
@@ -1068,16 +1068,19 @@ class SafeSignalBadge {
         return false;
     }
     
-    // ← ADDED: Scanner initialization method
+    // ← ADDED: Scanner initialization
     initScanners() {
-        this.apiClient = new _scanners_js__WEBPACK_IMPORTED_MODULE_0__/* .APIClient */ .Q9(API_BASE_URL);
-        this.scanner = new _scanners_js__WEBPACK_IMPORTED_MODULE_0__/* .PageScanner */ .Y7(this.apiClient);
-        this.scannerUI = new _scanners_js__WEBPACK_IMPORTED_MODULE_0__/* .ScannerUI */ .vk(this.scanner, this.root);
-        
-        console.log('[SafeSignal] Scanners initialized');
+        try {
+            this.apiClient = new _scanners_js__WEBPACK_IMPORTED_MODULE_0__/* .APIClient */ .Q9(API_BASE_URL);
+            this.scanner = new _scanners_js__WEBPACK_IMPORTED_MODULE_0__/* .PageScanner */ .Y7(this.apiClient);
+            this.scannerUI = new _scanners_js__WEBPACK_IMPORTED_MODULE_0__/* .ScannerUI */ .vk(this.scanner, this.root);
+            console.log('[SafeSignal] ✅ Scanners initialized');
+        } catch (error) {
+            console.error('[SafeSignal] Scanner initialization failed:', error);
+        }
     }
     
-    // ==================== BADGE CREATION (YOUR ORIGINAL) ====================
+    // ==================== BADGE CREATION ====================
     
     createBadge() {
         // Create host container
@@ -1093,7 +1096,7 @@ class SafeSignalBadge {
         };
         const config = sizes[this.sizeMode] || sizes.large;
         
-        // Create Shadow DOM structure with FIXED positioning
+        // Create Shadow DOM structure with all your original CSS
         this.root.innerHTML = `
             <style>
                 * {
@@ -1122,63 +1125,50 @@ class SafeSignalBadge {
                 .pos-mid-left { top: 50% !important; left: 20px !important; transform: translateY(-50%) !important; }
                 .pos-mid-right { top: 50% !important; right: 20px !important; transform: translateY(-50%) !important; }
                 
-                /* Mini chips container */
+                /* Mini chips wrapper */
                 .chips-wrapper {
-                    display: flex;
+                    display: none;
                     flex-direction: column;
                     gap: 6px;
-                    align-items: center;
-                    order: -1; /* Always above badge */
+                    max-width: 280px;
                 }
                 
-                /* Mini chip */
+                .chips-wrapper.visible {
+                    display: flex;
+                }
+                
                 .mini-chip {
                     height: ${config.chip}px;
-                    padding: 0 14px;
+                    padding: 0 16px;
                     border-radius: ${config.chip / 2}px;
                     font-size: ${config.chipFont}px;
                     font-weight: 600;
                     color: white;
-                    border: 1px solid rgba(255, 255, 255, 0.3);
-                    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
                     cursor: pointer;
                     display: flex;
                     align-items: center;
-                    gap: 6px;
+                    gap: 8px;
                     white-space: nowrap;
                     transition: all 0.2s ease;
-                    opacity: 0;
-                    transform: translateY(10px);
-                    animation: chipFadeIn 0.3s ease forwards;
-                    background: #2563eb; /* Default blue */
-                }
-                
-                @keyframes chipFadeIn {
-                    to {
-                        opacity: 0.95;
-                        transform: translateY(0);
-                    }
+                    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
                 }
                 
                 .mini-chip:hover {
-                    opacity: 1;
                     transform: translateY(-2px);
-                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
                 }
                 
-                .mini-chip.product {
-                    background: #7c3aed;
+                .chip-product {
+                    background: linear-gradient(135deg, #2196f3 0%, #1976d2 100%);
                 }
                 
-                .mini-chip.health {
-                    background: #059669;
+                .chip-health {
+                    background: linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%);
                 }
                 
-                /* Main badge wrapper */
+                /* Badge wrapper */
                 .badge-wrapper {
                     position: relative;
-                    display: flex;
-                    align-items: center;
                 }
                 
                 /* Main badge */
@@ -1186,7 +1176,7 @@ class SafeSignalBadge {
                     height: ${config.badge}px;
                     min-width: ${config.badge}px;
                     padding: 0 20px;
-                    padding-right: 48px; /* Space for menu button */
+                    padding-right: 48px;
                     border-radius: ${config.badge / 2}px;
                     font-size: ${config.font}px;
                     font-weight: 700;
@@ -1234,13 +1224,13 @@ class SafeSignalBadge {
                     line-height: 1;
                 }
                 
-                .badge-text {
+                .badge-label {
                     font-size: ${config.font}px;
                     line-height: 1;
                 }
                 
                 /* Menu toggle button */
-                .menu-toggle {
+                .menu-btn {
                     position: absolute;
                     right: 8px;
                     top: 50%;
@@ -1252,217 +1242,607 @@ class SafeSignalBadge {
                     border-radius: 50%;
                     color: white;
                     font-size: 20px;
+                    line-height: 1;
                     cursor: pointer;
+                    transition: all 0.2s ease;
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    transition: all 0.2s;
                 }
                 
-                .menu-toggle:hover {
+                .menu-btn:hover {
                     background: rgba(255, 255, 255, 0.3);
-                    transform: translateY(-50%) scale(1.1);
                 }
                 
-                /* Your existing menu, modal, and other styles continue here... */
-                /* (Keeping rest of CSS from your original) */
+                /* Menu panel */
+                .menu {
+                    position: absolute;
+                    bottom: calc(100% + 12px);
+                    right: 0;
+                    background: white;
+                    border-radius: 12px;
+                    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+                    border: 1px solid #e5e7eb;
+                    padding: 16px;
+                    min-width: 220px;
+                    display: none;
+                    z-index: 1000;
+                }
+                
+                .menu.open {
+                    display: block;
+                }
+                
+                /* Adjust menu position for top placements */
+                .pos-top-left .menu,
+                .pos-top-right .menu {
+                    bottom: auto;
+                    top: calc(100% + 12px);
+                }
+                
+                .menu-section {
+                    margin-bottom: 12px;
+                }
+                
+                .menu-section:last-child {
+                    margin-bottom: 0;
+                }
+                
+                .menu-label {
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: #6b7280;
+                    text-transform: uppercase;
+                    letter-spacing: 0.05em;
+                    margin-bottom: 8px;
+                }
+                
+                /* Position grid */
+                .position-grid {
+                    display: grid;
+                    grid-template-columns: repeat(3, 1fr);
+                    gap: 4px;
+                }
+                
+                .pos-btn {
+                    width: 32px;
+                    height: 32px;
+                    border: 1px solid #d1d5db;
+                    border-radius: 6px;
+                    background: white;
+                    cursor: pointer;
+                    transition: all 0.2s ease;
+                    position: relative;
+                }
+                
+                .pos-btn:hover {
+                    background: #f3f4f6;
+                    border-color: #9ca3af;
+                }
+                
+                .pos-btn.active {
+                    background: #7c3aed;
+                    border-color: #7c3aed;
+                }
+                
+                .pos-btn.active::after {
+                    content: '✓';
+                    position: absolute;
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    color: white;
+                    font-size: 14px;
+                    font-weight: 700;
+                }
+                
+                /* Size controls */
+                .size-controls {
+                    display: flex;
+                    gap: 4px;
+                }
+                
+                .size-btn {
+                    flex: 1;
+                    padding: 6px 12px;
+                    border: 1px solid #d1d5db;
+                    border-radius: 6px;
+                    background: white;
+                    font-size: 13px;
+                    font-weight: 500;
+                    cursor: pointer;
+                    transition: all 0.2s ease;
+                }
+                
+                .size-btn:hover {
+                    background: #f3f4f6;
+                    border-color: #9ca3af;
+                }
+                
+                .size-btn.active {
+                    background: #7c3aed;
+                    color: white;
+                    border-color: #7c3aed;
+                }
+                
+                /* Modal overlay */
+                .modal-overlay {
+                    display: none;
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    background: rgba(0, 0, 0, 0.5);
+                    z-index: 2147483646;
+                    align-items: center;
+                    justify-content: center;
+                }
+                
+                .modal-overlay.visible {
+                    display: flex;
+                }
+                
+                .modal {
+                    background: white;
+                    border-radius: 16px;
+                    padding: 24px;
+                    max-width: 400px;
+                    width: 90%;
+                    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+                }
+                
+                .modal-title {
+                    font-size: 20px;
+                    font-weight: 700;
+                    color: #111827;
+                    margin-bottom: 12px;
+                }
+                
+                .modal-body {
+                    font-size: 16px;
+                    line-height: 1.5;
+                    color: #6b7280;
+                    margin-bottom: 20px;
+                }
+                
+                .modal-close {
+                    width: 100%;
+                    padding: 12px;
+                    border-radius: 8px;
+                    background: #7c3aed;
+                    color: white;
+                    font-size: 16px;
+                    font-weight: 600;
+                    border: none;
+                    cursor: pointer;
+                    transition: all 0.2s ease;
+                }
+                
+                .modal-close:hover {
+                    background: #6d28d9;
+                }
+                
+                /* Accessibility */
+                @media (prefers-reduced-motion: reduce) {
+                    * {
+                        transition: none !important;
+                        animation: none !important;
+                    }
+                }
             </style>
             
-            <div class="safesignal-container pos-${this.position} state-${this.currentState}">
-                <!-- Mini chips appear here -->
-                <div class="chips-wrapper"></div>
+            <!-- Main container with position class -->
+            <div class="safesignal-container pos-bottom-right" id="main-container">
+                <!-- Mini chips wrapper (will be populated dynamically) -->
+                <div class="chips-wrapper" id="chips-wrapper"></div>
                 
-                <!-- Main badge -->
+                <!-- Badge wrapper -->
                 <div class="badge-wrapper">
-                    <div class="badge" role="button" tabindex="0" aria-label="SafeSignal security badge">
-                        <span class="badge-icon">${this.getStateIcon()}</span>
-                        <span class="badge-text">${this.getStateText()}</span>
-                        <button class="menu-toggle" aria-label="Options">⋯</button>
+                    <div class="badge state-checking" 
+                         role="button" 
+                         tabindex="0" 
+                         aria-live="polite" 
+                         aria-label="SafeSignal: Checking"
+                         id="main-badge">
+                        <span class="badge-icon">⧗</span>
+                        <span class="badge-label">Checking</span>
+                        <button class="menu-btn" 
+                                aria-label="SafeSignal Menu"
+                                aria-expanded="false"
+                                id="menu-btn">
+                            ⋯
+                        </button>
                     </div>
+                    
+                    <!-- Menu -->
+                    <div class="menu" id="menu" role="dialog">
+                        <div class="menu-section">
+                            <div class="menu-label">Position</div>
+                            <div class="position-grid">
+                                <button class="pos-btn" data-pos="top-left" title="Top Left"></button>
+                                <button class="pos-btn" data-pos="top-center" title="Top Center" disabled style="opacity: 0.3"></button>
+                                <button class="pos-btn" data-pos="top-right" title="Top Right"></button>
+                                <button class="pos-btn" data-pos="mid-left" title="Middle Left"></button>
+                                <button class="pos-btn" data-pos="mid-center" title="Center" disabled style="opacity: 0.3"></button>
+                                <button class="pos-btn" data-pos="mid-right" title="Middle Right"></button>
+                                <button class="pos-btn" data-pos="bottom-left" title="Bottom Left"></button>
+                                <button class="pos-btn" data-pos="bottom-center" title="Bottom Center" disabled style="opacity: 0.3"></button>
+                                <button class="pos-btn active" data-pos="bottom-right" title="Bottom Right"></button>
+                            </div>
+                        </div>
+                        
+                        <div class="menu-section">
+                            <div class="menu-label">Size</div>
+                            <div class="size-controls">
+                                <button class="size-btn" data-size="normal">Normal</button>
+                                <button class="size-btn active" data-size="large">Large</button>
+                                <button class="size-btn" data-size="xl">XL</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Modal -->
+            <div class="modal-overlay" id="modal-overlay">
+                <div class="modal" role="dialog" aria-modal="true">
+                    <h2 class="modal-title" id="modal-title">Feature Coming Soon</h2>
+                    <div class="modal-body" id="modal-body">
+                        This feature is being developed and will be available soon.
+                    </div>
+                    <button class="modal-close" id="modal-close">Got it</button>
                 </div>
             </div>
         `;
         
+        // Add to page - CRITICAL: append to body
         document.body.appendChild(this.host);
-        this.attachEventListeners();
         
-        // Detect and show mini chips if appropriate
-        this.updateMiniChips();
+        // Get element references
+        this.container = this.root.getElementById('main-container');
+        this.badge = this.root.getElementById('main-badge');
+        this.menuBtn = this.root.getElementById('menu-btn');
+        this.menu = this.root.getElementById('menu');
+        this.chipsWrapper = this.root.getElementById('chips-wrapper');
+        this.modalOverlay = this.root.getElementById('modal-overlay');
         
-        console.log('[SafeSignal] Badge created and injected');
+        // Initialize event listeners
+        this.initEventListeners();
+        
+        // Apply saved position
+        this.setPosition(this.userPreferences.position);
+        
+        // Apply saved size
+        this.setSize(this.userPreferences.sizeMode);
+        
+        console.log('[SafeSignal] Badge created and should be visible');
     }
     
-    getStateIcon() {
-        const icons = {
-            'checking': '⏳',
-            'ok': '✅',
-            'warning': '⚠️',
-            'danger': '❌'
+    // ==================== EVENT LISTENERS ====================
+    
+    initEventListeners() {
+        // Badge click
+        this.badge.addEventListener('click', (e) => {
+            if (e.target === this.menuBtn || this.menuBtn.contains(e.target)) return;
+            console.log('[SafeSignal] Badge clicked');
+        });
+        
+        // Menu toggle
+        this.menuBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.toggleMenu();
+        });
+        
+        // Position buttons
+        this.root.querySelectorAll('.pos-btn:not([disabled])').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const position = btn.dataset.pos;
+                this.setPosition(position);
+                this.saveUserPreferences();
+            });
+        });
+        
+        // Size buttons
+        this.root.querySelectorAll('.size-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const size = btn.dataset.size;
+                this.setSize(size);
+                this.saveUserPreferences();
+            });
+        });
+        
+        // Modal close
+        this.root.getElementById('modal-close').addEventListener('click', () => {
+            this.closeModal();
+        });
+        
+        // Close menu on outside click
+        document.addEventListener('click', (e) => {
+            if (this.isMenuOpen && !this.host.contains(e.target)) {
+                this.closeMenu();
+            }
+        });
+    }
+    
+    // ==================== POSITION MANAGEMENT ====================
+    
+    setPosition(position) {
+        const validPositions = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'mid-left', 'mid-right'];
+        
+        if (!validPositions.includes(position)) {
+            position = 'bottom-right';
+        }
+        
+        // Remove all position classes
+        validPositions.forEach(pos => {
+            this.container.classList.remove(`pos-${pos}`);
+        });
+        
+        // Add new position class
+        this.container.classList.add(`pos-${position}`);
+        
+        // Update active button
+        this.root.querySelectorAll('.pos-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.pos === position);
+        });
+        
+        this.position = position;
+        this.userPreferences.position = position;
+        
+        console.log(`[SafeSignal] Position set to: ${position}`);
+    }
+    
+    // ==================== SIZE MANAGEMENT ====================
+    
+    setSize(size) {
+        const sizes = {
+            normal: { badge: 56, font: 18, chip: 32, chipFont: 14 },
+            large: { badge: 64, font: 20, chip: 36, chipFont: 15 },
+            xl: { badge: 72, font: 22, chip: 40, chipFont: 16 }
         };
-        return icons[this.currentState] || '•';
+        
+        const config = sizes[size] || sizes.large;
+        
+        // Update badge size
+        this.badge.style.height = `${config.badge}px`;
+        this.badge.style.minWidth = `${config.badge}px`;
+        this.badge.style.borderRadius = `${config.badge / 2}px`;
+        this.badge.style.fontSize = `${config.font}px`;
+        
+        // Update chips size
+        this.root.querySelectorAll('.mini-chip').forEach(chip => {
+            chip.style.height = `${config.chip}px`;
+            chip.style.borderRadius = `${config.chip / 2}px`;
+            chip.style.fontSize = `${config.chipFont}px`;
+        });
+        
+        // Update active button
+        this.root.querySelectorAll('.size-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.size === size);
+        });
+        
+        this.sizeMode = size;
+        this.userPreferences.sizeMode = size;
+        
+        console.log(`[SafeSignal] Size set to: ${size}`);
     }
     
-    getStateText() {
-        const texts = {
-            'checking': 'Checking',
-            'ok': 'Safe',
-            'warning': 'Caution',
-            'danger': 'Warning'
-        };
-        return texts[this.currentState] || 'SafeSignal';
+    // ==================== MENU MANAGEMENT ====================
+    
+    toggleMenu() {
+        if (this.isMenuOpen) {
+            this.closeMenu();
+        } else {
+            this.openMenu();
+        }
     }
     
-    // ==================== MINI CHIPS UPDATE (MODIFIED) ====================
+    openMenu() {
+        this.menu.classList.add('open');
+        this.menuBtn.setAttribute('aria-expanded', 'true');
+        this.isMenuOpen = true;
+    }
+    
+    closeMenu() {
+        this.menu.classList.remove('open');
+        this.menuBtn.setAttribute('aria-expanded', 'false');
+        this.isMenuOpen = false;
+    }
+    
+    // ==================== MODAL MANAGEMENT ====================
+    
+    showModal(title, body) {
+        this.root.getElementById('modal-title').textContent = title;
+        this.root.getElementById('modal-body').textContent = body;
+        this.modalOverlay.classList.add('visible');
+        this.activeModal = this.modalOverlay;
+    }
+    
+    closeModal() {
+        this.modalOverlay.classList.remove('visible');
+        this.activeModal = null;
+    }
+    
+    // ==================== MINI CHIPS MANAGEMENT ====================
     
     updateMiniChips() {
-        if (!this.userPreferences.miniChipsEnabled) return;
+        // Run context detection
+        this.contextData = this.contextProbe.detectContext();
         
-        const chipsWrapper = this.root.querySelector('.chips-wrapper');
-        if (!chipsWrapper) return;
+        // Clear existing chips
+        this.chipsWrapper.innerHTML = '';
         
-        chipsWrapper.innerHTML = ''; // Clear existing
-        
-        // Run context analysis
-        const context = this.contextProbe.analyze();
-        
-        // ← MODIFIED: Wire chips to scanner
-        if (context.product.confidence > 0.5) {
+        // Add product chip if relevant
+        if (this.contextData.product.confidence > 0.3) {
             const productChip = document.createElement('div');
-            productChip.className = 'mini-chip product';
-            productChip.innerHTML = `
-                <span>🛒</span>
-                <span>Compare Prices</span>
-            `;
-            productChip.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.handleProductScan(); // ← WIRED TO SCANNER
-            });
-            chipsWrapper.appendChild(productChip);
+            productChip.className = 'mini-chip chip-product';
+            productChip.innerHTML = '🛒 Find Safer Deals';
+            productChip.addEventListener('click', () => this.handleProductScan());
+            this.chipsWrapper.appendChild(productChip);
         }
         
-        if (context.health.confidence > 0.5) {
+        // Add health chip if relevant
+        if (this.contextData.health.confidence > 0.3) {
             const healthChip = document.createElement('div');
-            healthChip.className = 'mini-chip health';
-            healthChip.innerHTML = `
-                <span>🩺</span>
-                <span>Verify Info</span>
-            `;
-            healthChip.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.handleHealthScan(); // ← WIRED TO SCANNER
-            });
-            chipsWrapper.appendChild(healthChip);
+            healthChip.className = 'mini-chip chip-health';
+            healthChip.innerHTML = '🏥 Check Health Claims';
+            healthChip.addEventListener('click', () => this.handleHealthScan());
+            this.chipsWrapper.appendChild(healthChip);
+        }
+        
+        // Show chips if we have any
+        if (this.chipsWrapper.children.length > 0) {
+            this.chipsWrapper.classList.add('visible');
+        } else {
+            this.chipsWrapper.classList.remove('visible');
         }
     }
     
-    // ← ADDED: Scanner handler methods
+    // ← ADDED: Scanner handlers
     async handleProductScan() {
-        console.log('[SafeSignal] Product scan triggered');
-        if (this.scannerUI) {
+        if (!this.scannerUI) {
+            console.error('[SafeSignal] Scanner UI not initialized');
+            return;
+        }
+        console.log('[SafeSignal] 🛒 Starting product scan...');
+        try {
             await this.scannerUI.handleProductScan();
+        } catch (error) {
+            console.error('[SafeSignal] Product scan error:', error);
         }
     }
     
     async handleHealthScan() {
-        console.log('[SafeSignal] Health scan triggered');
-        if (this.scannerUI) {
+        if (!this.scannerUI) {
+            console.error('[SafeSignal] Scanner UI not initialized');
+            return;
+        }
+        console.log('[SafeSignal] 🏥 Starting health scan...');
+        try {
             await this.scannerUI.handleHealthScan();
+        } catch (error) {
+            console.error('[SafeSignal] Health scan error:', error);
         }
     }
     
-    // ==================== YOUR ORIGINAL EVENT LISTENERS ====================
+    // ==================== STATE MANAGEMENT ====================
     
-    attachEventListeners() {
-        const badge = this.root.querySelector('.badge');
-        const menuToggle = this.root.querySelector('.menu-toggle');
-        
-        // Badge click
-        badge.addEventListener('click', (e) => {
-            if (e.target.closest('.menu-toggle')) return;
-            this.toggleMiniChips();
-        });
-        
-        // Menu toggle
-        if (menuToggle) {
-            menuToggle.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.toggleMenu();
-            });
-        }
-        
-        // Your other event listeners here...
-        // (Keep all your original listener code)
+    getStateIcon() {
+        const icons = {
+            checking: '⧗',
+            ok: '✅',
+            warning: '⚠️',
+            danger: '❌'
+        };
+        return icons[this.currentState] || '❓';
     }
     
-    toggleMiniChips() {
-        const chipsWrapper = this.root.querySelector('.chips-wrapper');
-        const isVisible = chipsWrapper.style.display !== 'none';
-        chipsWrapper.style.display = isVisible ? 'none' : 'flex';
+    getStateText() {
+        const texts = {
+            checking: 'Checking',
+            ok: 'Looks Good',
+            warning: 'Be Careful',
+            danger: 'High Risk'
+        };
+        return texts[this.currentState] || 'Unknown';
     }
     
-    toggleMenu() {
-        // Your original menu toggle code
-        console.log('[SafeSignal] Menu toggled');
-    }
-    
-    // ==================== YOUR ORIGINAL STATE & PAGE CHECKING ====================
-    
-    updateBadgeState(verdict) {
-        this.currentState = verdict;
+    updateBadgeState(state) {
+        this.currentState = state;
         
+        // Update badge state classes
+        this.container.classList.remove('state-checking', 'state-ok', 'state-warning', 'state-danger');
+        this.container.classList.add(`state-${state}`);
+        
+        // Update icon and text
         const icon = this.root.querySelector('.badge-icon');
-        const text = this.root.querySelector('.badge-text');
-        const container = this.root.querySelector('.safesignal-container');
+        const label = this.root.querySelector('.badge-label');
         
         if (icon) icon.textContent = this.getStateIcon();
-        if (text) text.textContent = this.getStateText();
+        if (label) label.textContent = this.getStateText();
         
-        if (container) {
-            container.classList.remove('state-checking', 'state-ok', 'state-warning', 'state-danger');
-            container.classList.add(`state-${verdict}`);
-        }
+        // Update ARIA label
+        this.badge.setAttribute('aria-label', `SafeSignal: ${this.getStateText()}`);
         
-        // Update mini chips when state changes
+        // Update mini chips based on new state
         this.updateMiniChips();
+        
+        console.log(`[SafeSignal] State updated to: ${state}`);
     }
     
-    async checkIfPageChanged(reason) {
-        const currentUrl = window.location.href;
+    // ==================== PAGE CHANGE DETECTION ====================
+    
+    async checkIfPageChanged(trigger = 'unknown') {
+        const url = window.location.href;
+        
+        // Skip if URL hasn't changed and not initial load
+        if (this.currentUrl === url && trigger !== 'initial_load') {
+            return;
+        }
         
         // Check cooldown
-        const lastCheck = this.lastCheckByUrl.get(currentUrl);
-        if (lastCheck && (Date.now() - lastCheck < this.checkCooldown)) {
+        const lastCheck = this.lastCheckByUrl.get(url);
+        if (lastCheck && (Date.now() - lastCheck) < this.checkCooldown) {
             console.log('[SafeSignal] Skipping check (cooldown)');
             return;
         }
         
-        if (this.currentUrl === currentUrl && reason !== 'initial_load') {
-            return;
-        }
+        this.currentUrl = url;
+        console.log(`[SafeSignal] Checking page (${trigger}): ${url}`);
         
-        this.currentUrl = currentUrl;
-        console.log(`[SafeSignal] Page changed (${reason}): ${currentUrl}`);
-        
+        // Set checking state
         this.updateBadgeState('checking');
         
         try {
-            // ← MODIFIED: Use apiClient instead of fetch
-            const response = await this.apiClient.post('/api/check', {
-                url: currentUrl
-            });
+            // Simple heuristic analysis (your original logic)
+            const pageText = document.body.innerText.toLowerCase();
+            let state = 'ok';
             
-            this.updateBadgeState(response.verdict);
-            this.lastCheckByUrl.set(currentUrl, Date.now());
+            // Check for suspicious patterns
+            const suspiciousTerms = [
+                'urgent', 'act now', 'limited time', 'congratulations', 'claim your', 'verify account',
+                'suspended', 'click here immediately', 'confirm identity'
+            ];
+            
+            const warningTerms = [
+                'sale', 'discount', 'offer', 'deal', 'subscribe',
+                'download', 'update required', 'install'
+            ];
+            
+            // Count suspicious indicators
+            const suspiciousCount = suspiciousTerms.filter(term => pageText.includes(term)).length;
+            const warningCount = warningTerms.filter(term => pageText.includes(term)).length;
+            
+            // Determine state based on indicators
+            if (suspiciousCount >= 3) {
+                state = 'danger';
+            } else if (suspiciousCount >= 1 || warningCount >= 3) {
+                state = 'warning';
+            } else {
+                // Check URL patterns
+                const urlLower = url.toLowerCase();
+                if (urlLower.includes('phishing') || urlLower.includes('suspicious')) {
+                    state = 'danger';
+                } else if (urlLower.includes('shop') || urlLower.includes('promo')) {
+                    state = 'warning';
+                }
+            }
+            
+            console.log(`[SafeSignal] Analysis complete: ${state}`);
+            this.updateBadgeState(state);
+            this.lastCheckByUrl.set(url, Date.now());
             
         } catch (error) {
-            console.error('[SafeSignal] Check failed:', error);
-            this.updateBadgeState('warning');
+            console.error('[SafeSignal] Analysis failed:', error);
+            this.updateBadgeState('ok'); // Default to safe on error
         }
     }
     
-    // ==================== YOUR ORIGINAL SPA DETECTION ====================
+    // ==================== SPA DETECTION ====================
     
     initSpaDetection() {
+        // Patch history API
         const originalPushState = history.pushState;
         const originalReplaceState = history.replaceState;
         
@@ -1476,10 +1856,12 @@ class SafeSignalBadge {
             this.checkIfPageChanged('replaceState');
         };
         
+        // Listen to popstate
         window.addEventListener('popstate', () => {
             this.checkIfPageChanged('popstate');
         });
         
+        // Mutation observer for content changes
         this.mutationObserver = new MutationObserver(() => {
             this.debouncedPageCheck();
         });
@@ -1488,6 +1870,8 @@ class SafeSignalBadge {
             childList: true,
             subtree: true
         });
+        
+        console.log('[SafeSignal] SPA detection enabled');
     }
     
     debouncedPageCheck() {
@@ -1497,74 +1881,151 @@ class SafeSignalBadge {
         }, 800);
     }
     
-    // ==================== YOUR ORIGINAL PREFERENCES ====================
-    
-    async loadUserPreferences() {
-        return new Promise((resolve) => {
-            chrome.storage.sync.get(['badgePosition', 'badgeSize', 'miniChipsEnabled'], (result) => {
-                if (result.badgePosition) {
-                    this.position = result.badgePosition;
-                }
-                if (result.badgeSize) {
-                    this.sizeMode = result.badgeSize;
-                }
-                if (result.miniChipsEnabled !== undefined) {
-                    this.userPreferences.miniChipsEnabled = result.miniChipsEnabled;
-                }
-                resolve();
-            });
-        });
-    }
+    // ==================== KEYBOARD SHORTCUTS ====================
     
     setupKeyboardShortcuts() {
         document.addEventListener('keydown', (e) => {
+            // Alt+S to toggle SafeSignal visibility
             if (e.altKey && e.key === 's') {
                 e.preventDefault();
-                this.toggleMiniChips();
+                this.toggleVisibility();
+            }
+            
+            // Escape to close menu/modal
+            if (e.key === 'Escape') {
+                if (this.activeModal) {
+                    this.closeModal();
+                } else if (this.isMenuOpen) {
+                    this.closeMenu();
+                }
             }
         });
     }
     
+    toggleVisibility() {
+        if (this.host.style.display === 'none') {
+            this.host.style.display = '';
+            console.log('[SafeSignal] Badge shown');
+        } else {
+            this.host.style.display = 'none';
+            console.log('[SafeSignal] Badge hidden');
+        }
+    }
+    
+    // ==================== RESIZE HANDLER ====================
+    
     setupResizeHandler() {
         let resizeTimer;
+        
         window.addEventListener('resize', () => {
-            clearTimeout(resizeTimer);
+            if (resizeTimer) {
+                clearTimeout(resizeTimer);
+            }
+            
             resizeTimer = setTimeout(() => {
-                console.log('[SafeSignal] Window resized');
+                // Ensure badge stays visible after resize
+                const rect = this.container.getBoundingClientRect();
+                if (rect.right > window.innerWidth || rect.bottom > window.innerHeight) {
+                    console.log('[SafeSignal] Adjusting position after resize');
+                    this.setPosition(this.position);
+                }
             }, 250);
         });
     }
     
+    // ==================== USER PREFERENCES ====================
+    
+    async loadUserPreferences() {
+        try {
+            const stored = await chrome.storage.sync.get([
+                'position',
+                'sizeMode',
+                'miniChipsEnabled'
+            ]);
+            
+            if (stored.position) {
+                this.userPreferences.position = stored.position;
+            }
+            
+            if (stored.sizeMode) {
+                this.userPreferences.sizeMode = stored.sizeMode;
+                this.sizeMode = stored.sizeMode;
+            }
+            
+            if (stored.miniChipsEnabled !== undefined) {
+                this.userPreferences.miniChipsEnabled = stored.miniChipsEnabled;
+            }
+            
+            console.log('[SafeSignal] Preferences loaded:', this.userPreferences);
+        } catch (error) {
+            console.warn('[SafeSignal] Could not load preferences:', error);
+            // Use defaults if storage fails
+        }
+    }
+    
+    async saveUserPreferences() {
+        try {
+            await chrome.storage.sync.set({
+                position: this.userPreferences.position,
+                sizeMode: this.userPreferences.sizeMode,
+                miniChipsEnabled: this.userPreferences.miniChipsEnabled
+            });
+            
+            console.log('[SafeSignal] Preferences saved');
+        } catch (error) {
+            console.warn('[SafeSignal] Could not save preferences:', error);
+        }
+    }
+    
+    // ==================== CLEANUP ====================
+    
     destroy() {
+        // Remove event listeners
         if (this.mutationObserver) {
             this.mutationObserver.disconnect();
         }
-        if (this.host) {
-            this.host.remove();
+        
+        // Remove DOM elements
+        if (this.host && this.host.parentNode) {
+            this.host.parentNode.removeChild(this.host);
         }
+        
+        // Clear maps
+        this.lastCheckByUrl.clear();
+        
         console.log('[SafeSignal] Badge destroyed');
     }
 }
 
-// ==================== YOUR ORIGINAL CONTEXT PROBE (UNCHANGED) ====================
+// ==================== CONTEXT PROBE (YOUR ORIGINAL) ====================
 
 class SafeSignalContextProbe {
     constructor() {
         this.indicators = {
             product: {
-                terms: ['buy', 'price', 'cart', 'checkout', 'shipping', 'product', 'shop', 'store', 'deal', 'discount', 'sale', 'order', 'purchase', 'payment'],
-                selectors: ['[itemtype*="schema.org/Product"]', '[data-price]', '.price', '.product', '.add-to-cart', '#buy-button'],
-                patterns: [/\$\d+/, /USD \d+/, /€\d+/, /£\d+/]
+                terms: ['price', 'buy now', 'add to cart', 'shop', 'deal', 'sale', 'discount'],
+                selectors: [
+                    '[itemtype*="Product"]',
+                    '[data-price]',
+                    'button[name="add-to-cart"]',
+                    '.product-price',
+                    '.price'
+                ],
+                patterns: [/\$\d+/, /€\d+/, /£\d+/]
             },
             health: {
-                terms: ['symptom', 'treatment', 'medicine', 'drug', 'cure', 'therapy', 'doctor', 'medical', 'health', 'disease', 'condition', 'diagnosis', 'prescription'],
-                selectors: ['[itemtype*="schema.org/MedicalCondition"]', '[itemtype*="schema.org/Drug"]', '.medical', '.health-info'],
-                suspiciousTerms: ['miracle', 'breakthrough', 'secret', 'one weird trick', 'doctors hate', 'instant relief', 'guaranteed cure']
+                terms: ['symptom', 'treatment', 'cure', 'diagnosis', 'medical', 'health', 'doctor'],
+                suspiciousTerms: ['miracle cure', 'guaranteed', 'breakthrough', 'secret'],
+                selectors: [
+                    'article[about*="health"]',
+                    '.medical-content',
+                    '[data-medical-info]'
+                ]
             }
         };
     }
     
-    analyze() {
+    detectContext() {
         const results = {
             product: { confidence: 0, signals: [] },
             health: { confidence: 0, signals: [] }
@@ -1686,28 +2147,35 @@ class SafeSignalContextProbe {
     }
 }
 
-// ==================== INITIALIZATION (YOUR ORIGINAL) ====================
+// ==================== INITIALIZATION ====================
 
 function initializeSafeSignal() {
+    // Clean up any existing instance
     if (window.safeSignalInstance) {
         window.safeSignalInstance.destroy();
         window.safeSignalInstance = null;
     }
     
+    // Create new instance
     window.safeSignalInstance = new SafeSignalBadge();
-    console.log('[SafeSignal] Extension initialized');
+    console.log('[SafeSignal] Extension initialized with scanners');
 }
 
+// Wait for DOM to be ready
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initializeSafeSignal);
 } else {
+    // DOM is already loaded, initialize immediately
     initializeSafeSignal();
 }
 
+// Handle dynamic iframe injections
 if (window.self === window.top) {
+    // Only in main window, not iframes
     console.log('[SafeSignal] Content script loaded in main window');
 }
 
+// Export for testing
 if ( true && module.exports) {
     module.exports = { SafeSignalBadge, SafeSignalContextProbe };
 }

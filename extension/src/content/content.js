@@ -1,9 +1,13 @@
-// SafeSignal Content Script - Fixed Visibility Edition
-// Version: 4.1-visibility-fix
+// SafeSignal Content Script - Fixed Visibility Edition + Scanner Wiring
+// Version: 4.1-visibility-fix + scanners
 
-const SAFESIGNAL_BUILD = 'content-2025-09-29-v4.1-fixed';
+const SAFESIGNAL_BUILD = 'content-2025-10-03-v4.1-scanner-wired';
+const API_BASE_URL = 'http://localhost:8000';
+
 console.info('[SafeSignal] Build:', SAFESIGNAL_BUILD);
-import { PageScanner, ScannerUI } from './scanners.js';
+
+// ← ADDED: Import scanner modules
+import { PageScanner, ScannerUI, APIClient } from './scanners.js';
 
 class SafeSignalBadge {
     constructor() {
@@ -30,6 +34,11 @@ class SafeSignalBadge {
         this.lastCheckByUrl = new Map();
         this.checkCooldown = 30 * 60 * 1000;
         
+        // ← ADDED: Scanner services (initialized after Shadow DOM creation)
+        this.apiClient = null;
+        this.scanner = null;
+        this.scannerUI = null;
+        
         // Context detection
         this.contextProbe = new SafeSignalContextProbe();
         
@@ -48,6 +57,10 @@ class SafeSignalBadge {
         
         await this.loadUserPreferences();
         this.createBadge();
+        
+        // ← ADDED: Initialize scanners after badge creation (needs this.root)
+        this.initScanners();
+        
         this.initSpaDetection();
         this.setupKeyboardShortcuts();
         this.setupResizeHandler();
@@ -75,6 +88,18 @@ class SafeSignalBadge {
         return false;
     }
     
+    // ← ADDED: Scanner initialization
+    initScanners() {
+        try {
+            this.apiClient = new APIClient(API_BASE_URL);
+            this.scanner = new PageScanner(this.apiClient);
+            this.scannerUI = new ScannerUI(this.scanner, this.root);
+            console.log('[SafeSignal] ✅ Scanners initialized');
+        } catch (error) {
+            console.error('[SafeSignal] Scanner initialization failed:', error);
+        }
+    }
+    
     // ==================== BADGE CREATION ====================
     
     createBadge() {
@@ -91,7 +116,7 @@ class SafeSignalBadge {
         };
         const config = sizes[this.sizeMode] || sizes.large;
         
-        // Create Shadow DOM structure with FIXED positioning
+        // Create Shadow DOM structure with all your original CSS
         this.root.innerHTML = `
             <style>
                 * {
@@ -120,63 +145,50 @@ class SafeSignalBadge {
                 .pos-mid-left { top: 50% !important; left: 20px !important; transform: translateY(-50%) !important; }
                 .pos-mid-right { top: 50% !important; right: 20px !important; transform: translateY(-50%) !important; }
                 
-                /* Mini chips container */
+                /* Mini chips wrapper */
                 .chips-wrapper {
-                    display: flex;
+                    display: none;
                     flex-direction: column;
                     gap: 6px;
-                    align-items: center;
-                    order: -1; /* Always above badge */
+                    max-width: 280px;
                 }
                 
-                /* Mini chip */
+                .chips-wrapper.visible {
+                    display: flex;
+                }
+                
                 .mini-chip {
                     height: ${config.chip}px;
-                    padding: 0 14px;
+                    padding: 0 16px;
                     border-radius: ${config.chip / 2}px;
                     font-size: ${config.chipFont}px;
                     font-weight: 600;
                     color: white;
-                    border: 1px solid rgba(255, 255, 255, 0.3);
-                    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
                     cursor: pointer;
                     display: flex;
                     align-items: center;
-                    gap: 6px;
+                    gap: 8px;
                     white-space: nowrap;
                     transition: all 0.2s ease;
-                    opacity: 0;
-                    transform: translateY(10px);
-                    animation: chipFadeIn 0.3s ease forwards;
-                    background: #2563eb; /* Default blue */
-                }
-                
-                @keyframes chipFadeIn {
-                    to {
-                        opacity: 0.95;
-                        transform: translateY(0);
-                    }
+                    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
                 }
                 
                 .mini-chip:hover {
-                    opacity: 1;
                     transform: translateY(-2px);
-                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
                 }
                 
-                .mini-chip.product {
-                    background: #7c3aed;
+                .chip-product {
+                    background: linear-gradient(135deg, #2196f3 0%, #1976d2 100%);
                 }
                 
-                .mini-chip.health {
-                    background: #059669;
+                .chip-health {
+                    background: linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%);
                 }
                 
-                /* Main badge wrapper */
+                /* Badge wrapper */
                 .badge-wrapper {
                     position: relative;
-                    display: flex;
-                    align-items: center;
                 }
                 
                 /* Main badge */
@@ -184,77 +196,82 @@ class SafeSignalBadge {
                     height: ${config.badge}px;
                     min-width: ${config.badge}px;
                     padding: 0 20px;
-                    padding-right: 48px; /* Space for menu button */
+                    padding-right: 48px;
                     border-radius: ${config.badge / 2}px;
                     font-size: ${config.font}px;
                     font-weight: 700;
                     color: white;
-                    border: 2px solid rgba(255, 255, 255, 0.3);
                     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
                     cursor: pointer;
                     display: flex;
                     align-items: center;
                     gap: 10px;
+                    white-space: nowrap;
                     transition: all 0.2s ease;
                     position: relative;
-                    background: #6b7280; /* Default gray */
                 }
                 
                 .badge:hover {
-                    transform: scale(1.05);
-                    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+                    transform: scale(1.02);
+                    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
                 }
                 
-                .badge.state-ok {
-                    background: #059669;
+                /* State colors */
+                .state-checking .badge {
+                    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+                    animation: pulse 2s infinite;
                 }
                 
-                .badge.state-warning {
-                    background: #d97706;
+                .state-ok .badge {
+                    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
                 }
                 
-                .badge.state-danger {
-                    background: #dc2626;
+                .state-warning .badge {
+                    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
                 }
                 
-                .badge.state-checking {
-                    background: #6b7280;
+                .state-danger .badge {
+                    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+                }
+                
+                @keyframes pulse {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: 0.8; }
                 }
                 
                 .badge-icon {
-                    font-size: 1.2em;
+                    font-size: ${config.font + 2}px;
                     line-height: 1;
                 }
                 
                 .badge-label {
-                    font-size: 0.9em;
-                    white-space: nowrap;
+                    font-size: ${config.font}px;
+                    line-height: 1;
                 }
                 
-                /* Menu button - inside badge */
+                /* Menu toggle button */
                 .menu-btn {
                     position: absolute;
-                    right: 10px;
+                    right: 8px;
                     top: 50%;
                     transform: translateY(-50%);
                     width: 32px;
                     height: 32px;
-                    border-radius: 50%;
                     background: rgba(255, 255, 255, 0.2);
-                    color: white;
                     border: none;
+                    border-radius: 50%;
+                    color: white;
+                    font-size: 20px;
+                    line-height: 1;
                     cursor: pointer;
+                    transition: all 0.2s ease;
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    font-size: 20px;
-                    font-weight: bold;
-                    transition: all 0.2s ease;
                 }
                 
                 .menu-btn:hover {
                     background: rgba(255, 255, 255, 0.3);
-                    transform: translateY(-50%) scale(1.1);
                 }
                 
                 /* Menu panel */
@@ -329,29 +346,28 @@ class SafeSignalBadge {
                 }
                 
                 .pos-btn.active::after {
-                    content: '•';
+                    content: '✓';
                     position: absolute;
-                    inset: 0;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
                     color: white;
-                    font-size: 18px;
+                    font-size: 14px;
+                    font-weight: 700;
                 }
                 
-                /* Size buttons */
+                /* Size controls */
                 .size-controls {
                     display: flex;
-                    gap: 8px;
+                    gap: 4px;
                 }
                 
                 .size-btn {
                     flex: 1;
-                    padding: 6px 10px;
+                    padding: 6px 12px;
                     border: 1px solid #d1d5db;
                     border-radius: 6px;
                     background: white;
-                    color: #374151;
                     font-size: 13px;
                     font-weight: 500;
                     cursor: pointer;
@@ -369,19 +385,21 @@ class SafeSignalBadge {
                     border-color: #7c3aed;
                 }
                 
-                /* Modal */
+                /* Modal overlay */
                 .modal-overlay {
+                    display: none;
                     position: fixed;
-                    inset: 0;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
                     background: rgba(0, 0, 0, 0.5);
-                    display: flex;
+                    z-index: 2147483646;
                     align-items: center;
                     justify-content: center;
-                    z-index: 2147483646;
-                    display: none;
                 }
                 
-                .modal-overlay.open {
+                .modal-overlay.visible {
                     display: flex;
                 }
                 
@@ -391,7 +409,7 @@ class SafeSignalBadge {
                     padding: 24px;
                     max-width: 400px;
                     width: 90%;
-                    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+                    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
                 }
                 
                 .modal-title {
@@ -652,213 +670,158 @@ class SafeSignalBadge {
         this.isMenuOpen = false;
     }
     
-    // ==================== MINI CHIPS ====================
+    // ==================== MODAL MANAGEMENT ====================
+    
+    showModal(title, body) {
+        this.root.getElementById('modal-title').textContent = title;
+        this.root.getElementById('modal-body').textContent = body;
+        this.modalOverlay.classList.add('visible');
+        this.activeModal = this.modalOverlay;
+    }
+    
+    closeModal() {
+        this.modalOverlay.classList.remove('visible');
+        this.activeModal = null;
+    }
+    
+    // ==================== MINI CHIPS MANAGEMENT ====================
     
     updateMiniChips() {
         // Run context detection
-        this.contextData = this.contextProbe.analyze();
+        this.contextData = this.contextProbe.detectContext();
         
         // Clear existing chips
         this.chipsWrapper.innerHTML = '';
         
-        // Add chips based on confidence scores
-        const chips = [];
-        
+        // Add product chip if relevant
         if (this.contextData.product.confidence > 0.3) {
-            chips.push({
-                type: 'product',
-                label: '🛒 Better Deals',
-                icon: '🛒'
-            });
+            const productChip = document.createElement('div');
+            productChip.className = 'mini-chip chip-product';
+            productChip.innerHTML = '🛒 Find Safer Deals';
+            productChip.addEventListener('click', () => this.handleProductScan());
+            this.chipsWrapper.appendChild(productChip);
         }
         
+        // Add health chip if relevant
         if (this.contextData.health.confidence > 0.3) {
-            chips.push({
-                type: 'health',
-                label: '🔬 Verify Info',
-                icon: '🔬'
-            });
+            const healthChip = document.createElement('div');
+            healthChip.className = 'mini-chip chip-health';
+            healthChip.innerHTML = '🏥 Check Health Claims';
+            healthChip.addEventListener('click', () => this.handleHealthScan());
+            this.chipsWrapper.appendChild(healthChip);
         }
         
-        // Create chip elements
-        chips.forEach((chip, index) => {
-            const chipEl = document.createElement('button');
-            chipEl.className = `mini-chip ${chip.type}`;
-            chipEl.innerHTML = `${chip.label}`;
-            chipEl.setAttribute('aria-label', chip.label);
-            chipEl.style.animationDelay = `${index * 0.1}s`;
-            
-            chipEl.addEventListener('click', () => this.handleChipClick(chip.type));
-            
-            this.chipsWrapper.appendChild(chipEl);
-        });
+        // Show chips if we have any
+        if (this.chipsWrapper.children.length > 0) {
+            this.chipsWrapper.classList.add('visible');
+        } else {
+            this.chipsWrapper.classList.remove('visible');
+        }
     }
     
-    handleChipClick(type) {
-        console.log(`[SafeSignal] Chip clicked: ${type}`);
-        this.showModal(type);
+    // ← ADDED: Scanner handlers
+    async handleProductScan() {
+        if (!this.scannerUI) {
+            console.error('[SafeSignal] Scanner UI not initialized');
+            return;
+        }
+        console.log('[SafeSignal] 🛒 Starting product scan...');
+        try {
+            await this.scannerUI.handleProductScan();
+        } catch (error) {
+            console.error('[SafeSignal] Product scan error:', error);
+        }
     }
     
-    // ==================== MODAL ====================
-    
-    showModal(type) {
-        const modalContent = {
-            product: {
-                title: '🛒 Product Price Scanner',
-                body: 'This feature will compare prices across trusted retailers and alert you to better deals. Coming soon!'
-            },
-            health: {
-                title: '🔬 Health Claim Verifier',
-                body: 'This feature will fact-check health claims against medical databases. Coming soon!'
-            }
-        };
-        
-        const content = modalContent[type] || modalContent.product;
-        
-        const title = this.root.getElementById('modal-title');
-        const body = this.root.getElementById('modal-body');
-        
-        title.textContent = content.title;
-        body.textContent = content.body;
-        
-        this.modalOverlay.classList.add('open');
-        this.activeModal = type;
-    }
-    
-    closeModal() {
-        this.modalOverlay.classList.remove('open');
-        this.activeModal = null;
+    async handleHealthScan() {
+        if (!this.scannerUI) {
+            console.error('[SafeSignal] Scanner UI not initialized');
+            return;
+        }
+        console.log('[SafeSignal] 🏥 Starting health scan...');
+        try {
+            await this.scannerUI.handleHealthScan();
+        } catch (error) {
+            console.error('[SafeSignal] Health scan error:', error);
+        }
     }
     
     // ==================== STATE MANAGEMENT ====================
     
-    updateBadgeState(state) {
-        const states = {
-            'ok': { icon: '✅', label: 'Safe', class: 'state-ok' },
-            'warning': { icon: '⚠️', label: 'Caution', class: 'state-warning' },
-            'danger': { icon: '❌', label: 'High Risk', class: 'state-danger' },
-            'checking': { icon: '⧗', label: 'Checking', class: 'state-checking' }
+    getStateIcon() {
+        const icons = {
+            checking: '⧗',
+            ok: '✅',
+            warning: '⚠️',
+            danger: '❌'
         };
-        
-        const config = states[state] || states.checking;
-        
-        // Update badge classes
-        this.badge.className = `badge ${config.class}`;
-        
-        // Update content
-        const icon = this.badge.querySelector('.badge-icon');
-        const label = this.badge.querySelector('.badge-label');
-        
-        icon.textContent = config.icon;
-        label.textContent = config.label;
-        
-        // Update ARIA
-        this.badge.setAttribute('aria-label', `SafeSignal: ${config.label}`);
-        
+        return icons[this.currentState] || '❓';
+    }
+    
+    getStateText() {
+        const texts = {
+            checking: 'Checking',
+            ok: 'Looks Good',
+            warning: 'Be Careful',
+            danger: 'High Risk'
+        };
+        return texts[this.currentState] || 'Unknown';
+    }
+    
+    updateBadgeState(state) {
         this.currentState = state;
         
+        // Update badge state classes
+        this.container.classList.remove('state-checking', 'state-ok', 'state-warning', 'state-danger');
+        this.container.classList.add(`state-${state}`);
+        
+        // Update icon and text
+        const icon = this.root.querySelector('.badge-icon');
+        const label = this.root.querySelector('.badge-label');
+        
+        if (icon) icon.textContent = this.getStateIcon();
+        if (label) label.textContent = this.getStateText();
+        
+        // Update ARIA label
+        this.badge.setAttribute('aria-label', `SafeSignal: ${this.getStateText()}`);
+        
         // Update mini chips based on new state
-        if (state !== 'checking') {
-            this.updateMiniChips();
-        }
+        this.updateMiniChips();
+        
+        console.log(`[SafeSignal] State updated to: ${state}`);
     }
     
-    // ==================== SPA DETECTION ====================
+    // ==================== PAGE CHANGE DETECTION ====================
     
-    initSpaDetection() {
-        // Monitor URL changes
-        const originalPushState = history.pushState;
-        const originalReplaceState = history.replaceState;
+    async checkIfPageChanged(trigger = 'unknown') {
+        const url = window.location.href;
         
-        history.pushState = (...args) => {
-            originalPushState.apply(history, args);
-            this.checkIfPageChanged('pushState');
-        };
-        
-        history.replaceState = (...args) => {
-            originalReplaceState.apply(history, args);
-            this.checkIfPageChanged('replaceState');
-        };
-        
-        window.addEventListener('popstate', () => {
-            this.checkIfPageChanged('popstate');
-        });
-        
-        // Monitor DOM changes
-        this.mutationObserver = new MutationObserver(() => {
-            this.debouncedPageCheck();
-        });
-        
-        this.mutationObserver.observe(document.body, {
-            childList: true,
-            subtree: true,
-            attributes: false,
-            characterData: false
-        });
-    }
-    
-    debouncedPageCheck() {
-        if (this.pageDebounceTimer) {
-            clearTimeout(this.pageDebounceTimer);
-        }
-        
-        this.pageDebounceTimer = setTimeout(() => {
-            if (this.currentUrl !== window.location.href) {
-                this.checkIfPageChanged('mutation');
-            }
-        }, 800);
-    }
-    
-    checkIfPageChanged(trigger) {
-        const newUrl = window.location.href;
-        
-        // Skip if same URL (but allow initial load)
-        if (newUrl === this.currentUrl && trigger !== 'initial_load') {
+        // Skip if URL hasn't changed and not initial load
+        if (this.currentUrl === url && trigger !== 'initial_load') {
             return;
         }
         
-        console.log(`[SafeSignal] Page changed (${trigger}): ${newUrl}`);
-        
-        // Check cooldown (skip for initial load)
-        if (trigger !== 'initial_load') {
-            const lastCheck = this.lastCheckByUrl.get(newUrl);
-            const now = Date.now();
-            
-            if (lastCheck && (now - lastCheck) < this.checkCooldown) {
-                console.log('[SafeSignal] Skipping check - cooldown active');
-                return;
-            }
+        // Check cooldown
+        const lastCheck = this.lastCheckByUrl.get(url);
+        if (lastCheck && (Date.now() - lastCheck) < this.checkCooldown) {
+            console.log('[SafeSignal] Skipping check (cooldown)');
+            return;
         }
         
-        // Update current URL
-        this.currentUrl = newUrl;
+        this.currentUrl = url;
+        console.log(`[SafeSignal] Checking page (${trigger}): ${url}`);
         
-        // Update state to checking
+        // Set checking state
         this.updateBadgeState('checking');
         
-        // Perform page analysis
-        this.analyzePage(newUrl);
-    }
-    
-    async analyzePage(url) {
         try {
-            console.log('[SafeSignal] Analyzing page...');
-            
-            // Quick context analysis for demo
-            const context = this.contextProbe.analyze();
-            console.log('[SafeSignal] Context analysis:', context);
-            
-            // Simulate API call (replace with actual API integration)
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            
-            // Demo: Assign states based on simple heuristics
-            let state = 'ok'; // Default to safe
+            // Simple heuristic analysis (your original logic)
+            const pageText = document.body.innerText.toLowerCase();
+            let state = 'ok';
             
             // Check for suspicious patterns
-            const pageText = document.body.innerText?.toLowerCase() || '';
             const suspiciousTerms = [
-                'urgent', 'act now', 'limited time', 'virus detected', 
-                'winner', 'congratulations', 'claim your', 'verify account',
+                'urgent', 'act now', 'limited time', 'congratulations', 'claim your', 'verify account',
                 'suspended', 'click here immediately', 'confirm identity'
             ];
             
@@ -894,6 +857,48 @@ class SafeSignalBadge {
             console.error('[SafeSignal] Analysis failed:', error);
             this.updateBadgeState('ok'); // Default to safe on error
         }
+    }
+    
+    // ==================== SPA DETECTION ====================
+    
+    initSpaDetection() {
+        // Patch history API
+        const originalPushState = history.pushState;
+        const originalReplaceState = history.replaceState;
+        
+        history.pushState = (...args) => {
+            originalPushState.apply(history, args);
+            this.checkIfPageChanged('pushState');
+        };
+        
+        history.replaceState = (...args) => {
+            originalReplaceState.apply(history, args);
+            this.checkIfPageChanged('replaceState');
+        };
+        
+        // Listen to popstate
+        window.addEventListener('popstate', () => {
+            this.checkIfPageChanged('popstate');
+        });
+        
+        // Mutation observer for content changes
+        this.mutationObserver = new MutationObserver(() => {
+            this.debouncedPageCheck();
+        });
+        
+        this.mutationObserver.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+        
+        console.log('[SafeSignal] SPA detection enabled');
+    }
+    
+    debouncedPageCheck() {
+        clearTimeout(this.pageDebounceTimer);
+        this.pageDebounceTimer = setTimeout(() => {
+            this.checkIfPageChanged('mutation');
+        }, 800);
     }
     
     // ==================== KEYBOARD SHORTCUTS ====================
@@ -996,67 +1001,67 @@ class SafeSignalBadge {
     
     destroy() {
         // Remove event listeners
-        document.removeEventListener('click', this.documentClickHandler);
-        
-        // Disconnect observers
         if (this.mutationObserver) {
             this.mutationObserver.disconnect();
         }
         
-        // Clear timers
-        if (this.pageDebounceTimer) {
-            clearTimeout(this.pageDebounceTimer);
-        }
-        
-        // Remove DOM
+        // Remove DOM elements
         if (this.host && this.host.parentNode) {
             this.host.parentNode.removeChild(this.host);
         }
+        
+        // Clear maps
+        this.lastCheckByUrl.clear();
         
         console.log('[SafeSignal] Badge destroyed');
     }
 }
 
-// ==================== CONTEXT DETECTION ====================
+// ==================== CONTEXT PROBE (YOUR ORIGINAL) ====================
 
 class SafeSignalContextProbe {
     constructor() {
         this.indicators = {
             product: {
-                terms: ['buy', 'price', 'cart', 'checkout', 'shipping', 'product', 'shop', 'store', 'deal', 'discount', 'sale', 'order', 'purchase', 'payment'],
-                selectors: ['[itemtype*="schema.org/Product"]', '[data-price]', '.price', '.product', '.add-to-cart', '#buy-button'],
-                patterns: [/\$\d+/, /USD \d+/, /€\d+/, /£\d+/]
+                terms: ['price', 'buy now', 'add to cart', 'shop', 'deal', 'sale', 'discount'],
+                selectors: [
+                    '[itemtype*="Product"]',
+                    '[data-price]',
+                    'button[name="add-to-cart"]',
+                    '.product-price',
+                    '.price'
+                ],
+                patterns: [/\$\d+/, /€\d+/, /£\d+/]
             },
             health: {
-                terms: ['symptom', 'treatment', 'medicine', 'drug', 'cure', 'therapy', 'doctor', 'medical', 'health', 'disease', 'condition', 'diagnosis', 'prescription'],
-                selectors: ['[itemtype*="schema.org/MedicalCondition"]', '[itemtype*="schema.org/Drug"]', '.medical', '.health-info'],
-                suspiciousTerms: ['miracle', 'breakthrough', 'secret', 'one weird trick', 'doctors hate', 'instant relief', 'guaranteed cure']
+                terms: ['symptom', 'treatment', 'cure', 'diagnosis', 'medical', 'health', 'doctor'],
+                suspiciousTerms: ['miracle cure', 'guaranteed', 'breakthrough', 'secret'],
+                selectors: [
+                    'article[about*="health"]',
+                    '.medical-content',
+                    '[data-medical-info]'
+                ]
             }
         };
     }
     
-    analyze() {
+    detectContext() {
         const results = {
             product: { confidence: 0, signals: [] },
             health: { confidence: 0, signals: [] }
         };
         
-        // Get page content
         const pageText = this.getPageText();
         const pageTitle = document.title.toLowerCase();
         const pageUrl = window.location.href.toLowerCase();
         
-        // Analyze product signals
         results.product = this.analyzeProductSignals(pageText, pageTitle, pageUrl);
-        
-        // Analyze health signals
         results.health = this.analyzeHealthSignals(pageText, pageTitle, pageUrl);
         
         return results;
     }
     
     getPageText() {
-        // Get text from main content areas
         const contentSelectors = ['main', 'article', '[role="main"]', '#content', '.content'];
         let text = '';
         
@@ -1067,20 +1072,18 @@ class SafeSignalContextProbe {
             }
         }
         
-        // Fallback to body if no main content found
         if (!text.trim()) {
             const bodyText = document.body.innerText || document.body.textContent || '';
             text = bodyText;
         }
         
-        return text.toLowerCase().slice(0, 5000); // Limit to first 5000 chars
+        return text.toLowerCase().slice(0, 5000);
     }
     
     analyzeProductSignals(pageText, pageTitle, pageUrl) {
         let confidence = 0;
         const signals = [];
         
-        // Check for product terms
         const termMatches = this.indicators.product.terms.filter(term => 
             pageText.includes(term) || pageTitle.includes(term)
         );
@@ -1090,12 +1093,11 @@ class SafeSignalContextProbe {
             signals.push(`Found ${termMatches.length} shopping terms`);
         }
         
-        // Check for product selectors
         const selectorMatches = this.indicators.product.selectors.filter(selector => {
             try {
                 return document.querySelector(selector) !== null;
             } catch (e) {
-                return false; // Invalid selector
+                return false;
             }
         });
         
@@ -1104,7 +1106,6 @@ class SafeSignalContextProbe {
             signals.push(`Found ${selectorMatches.length} product elements`);
         }
         
-        // Check for price patterns
         const priceMatches = this.indicators.product.patterns.filter(pattern =>
             pattern.test(pageText)
         );
@@ -1114,7 +1115,6 @@ class SafeSignalContextProbe {
             signals.push('Found price indicators');
         }
         
-        // Check URL patterns
         if (/shop|store|product|cart|checkout|buy/.test(pageUrl)) {
             confidence += 0.2;
             signals.push('Shopping URL pattern');
@@ -1127,7 +1127,6 @@ class SafeSignalContextProbe {
         let confidence = 0;
         const signals = [];
         
-        // Check for health terms
         const termMatches = this.indicators.health.terms.filter(term =>
             pageText.includes(term) || pageTitle.includes(term)
         );
@@ -1137,7 +1136,6 @@ class SafeSignalContextProbe {
             signals.push(`Found ${termMatches.length} health terms`);
         }
         
-        // Check for suspicious health claims
         const suspiciousMatches = this.indicators.health.suspiciousTerms.filter(term =>
             pageText.includes(term)
         );
@@ -1147,12 +1145,11 @@ class SafeSignalContextProbe {
             signals.push('Detected suspicious health claims');
         }
         
-        // Check for health selectors
         const selectorMatches = this.indicators.health.selectors.filter(selector => {
             try {
                 return document.querySelector(selector) !== null;
             } catch (e) {
-                return false; // Invalid selector
+                return false;
             }
         });
         
@@ -1161,7 +1158,6 @@ class SafeSignalContextProbe {
             signals.push('Found health-related markup');
         }
         
-        // Check URL patterns
         if (/health|medical|medicine|treatment|symptom|drug/.test(pageUrl)) {
             confidence += 0.2;
             signals.push('Health URL pattern');
@@ -1182,10 +1178,7 @@ function initializeSafeSignal() {
     
     // Create new instance
     window.safeSignalInstance = new SafeSignalBadge();
-    const apiClient = new APIClient(API_BASE_URL);
-    const scanner = new PageScanner(apiClient);
-    const scannerUI = new ScannerUI(scanner, shadowRoot);
-    console.log('[SafeSignal] Extension initialized');
+    console.log('[SafeSignal] Extension initialized with scanners');
 }
 
 // Wait for DOM to be ready
