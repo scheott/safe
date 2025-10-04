@@ -365,7 +365,7 @@ class ProductScanner:
         
         try:
             # Run quick Tier-0 check to get page verdict
-            tier0_result = await self.tier0.analyze(url)
+            tier0_result = self.tier0.analyze(url)
             
             # Extract relevant risk reasons
             relevant_risks = {

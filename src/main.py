@@ -5,7 +5,6 @@ from fastapi.responses import JSONResponse
 import logging
 import time
 import os
-from src.scan_endpoints import router as scan_router
 from .routes import check
 from .services.database import get_db_service
 from .services.reputation_service import ReputationService
@@ -77,7 +76,15 @@ async def log_requests(request: Request, call_next):
 # ============================================================================
 
 app.include_router(check.router, prefix="/api", tags=["check"])
-app.include_router(scan_router, prefix="/api/scan", tags=["scanners"])
+
+# Import and register scanner endpoints
+try:
+    from src.scan_endpoints import router as scan_router
+    # Note: scan_router already has prefix="/api/scan" defined in scan_endpoints.py
+    app.include_router(scan_router, tags=["scanners"])
+    logger.info("✅ Scanner routes registered")
+except ImportError as e:
+    logger.warning(f"Could not import scanner endpoints: {e}")
 
 # ============================================================================
 # STARTUP & SHUTDOWN
@@ -89,18 +96,29 @@ async def startup_event():
     logger.info("🚀 SafeSignal API starting up with scanners...")
     
     try:
+        # Initialize database service
         db_service = get_db_service()
         logger.info(f"✅ Database service initialized at {db_service.db_path}")
         
-        # Initialize reputation service
+        # Initialize reputation service (loads data in __init__)
         rep_service = ReputationService()
-        await rep_service.initialize()
         logger.info("✅ Reputation service initialized")
         
-        # Initialize Tier-0 analyzer
-        analyzer = Tier0Analyzer()
-        await analyzer.initialize()
+        # Initialize Tier-0 analyzer (pass reputation service)
+        analyzer = Tier0Analyzer(rep_service)
         logger.info("✅ Tier-0 analyzer initialized")
+        
+        # Initialize Phase 2.5 scanners
+        try:
+            import src.scan_endpoints as scan_ep
+            
+            # Initialize the global scanner instances
+            scan_ep.health_scanner = scan_ep.HealthScanner()
+            scan_ep.product_scanner = scan_ep.ProductScanner(analyzer)
+            
+            logger.info("✅ Health and Product scanners initialized")
+        except Exception as scanner_error:
+            logger.warning(f"Scanner initialization failed (non-critical): {scanner_error}")
         
         logger.info("✅ All services ready!")
         
