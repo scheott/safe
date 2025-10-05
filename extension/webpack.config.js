@@ -5,7 +5,16 @@ module.exports = {
   mode: 'development',
   devtool: 'cheap-module-source-map', // Changed from false - MV3 compatible
   entry: {
-    content: './src/content/content.js',
+    content: [
+        './src/content/content.js',
+        './src/services/pageClassifier.js',
+        './src/services/intentScorer.js',
+        './src/services/subjectExtractor.js',
+        './src/services/chipManager.js',
+        './src/services/chipCache.js',
+        './src/services/chipCooldown.js',
+        './src/components/AssistModal.js'
+    ],
     popup: './src/popup/popup.js'
     // Note: background is NOT here - we copy it directly
   },

@@ -5,6 +5,7 @@ const SAFESIGNAL_BUILD = 'content-2025-10-03-v4.1-scanner-wired';
 const API_BASE_URL = 'http://localhost:8000';
 
 console.info('[SafeSignal] Build:', SAFESIGNAL_BUILD);
+import chipManager from './services/chipManager.js';
 
 // ← ADDED: Import scanner modules
 import { PageScanner, ScannerUI, APIClient } from './scanners.js';
@@ -48,6 +49,7 @@ class SafeSignalBadge {
             sizeMode: 'large',
             miniChipsEnabled: true
         };
+        this.chipManager = chipManager;
         
         this.init();
     }
@@ -57,7 +59,12 @@ class SafeSignalBadge {
         
         await this.loadUserPreferences();
         this.createBadge();
-        
+        window.chipManager = chipManager;
+        chipManager.chipElements = {
+            product: () => this.root.querySelector('.chip-product'),
+            health: () => this.root.querySelector('.chip-health'),
+            wrapper: () => this.chipsWrapper
+        };
         // ← ADDED: Initialize scanners after badge creation (needs this.root)
         this.initScanners();
         
@@ -95,6 +102,11 @@ class SafeSignalBadge {
             this.scanner = new PageScanner(this.apiClient);
             this.scannerUI = new ScannerUI(this.scanner, this.root);
             console.log('[SafeSignal] ✅ Scanners initialized');
+            this.chipManager.chipElements = {
+                product: this.root.querySelector('.chip-product'),
+                health: this.root.querySelector('.chip-health'),
+                wrapper: this.chipsWrapper
+            };
         } catch (error) {
             console.error('[SafeSignal] Scanner initialization failed:', error);
         }
@@ -687,60 +699,49 @@ class SafeSignalBadge {
     // ==================== MINI CHIPS MANAGEMENT ====================
     
     updateMiniChips() {
-        // Run context detection
-        this.contextData = this.contextProbe.detectContext();
-        
-        // Clear existing chips
-        this.chipsWrapper.innerHTML = '';
-        
-        // Add product chip if relevant
-        if (this.contextData.product.confidence > 0.3) {
-            const productChip = document.createElement('div');
-            productChip.className = 'mini-chip chip-product';
-            productChip.innerHTML = '🛒 Find Safer Deals';
-            productChip.addEventListener('click', () => this.handleProductScan());
-            this.chipsWrapper.appendChild(productChip);
-        }
-        
-        // Add health chip if relevant
-        if (this.contextData.health.confidence > 0.3) {
-            const healthChip = document.createElement('div');
-            healthChip.className = 'mini-chip chip-health';
-            healthChip.innerHTML = '🏥 Check Health Claims';
-            healthChip.addEventListener('click', () => this.handleHealthScan());
-            this.chipsWrapper.appendChild(healthChip);
-        }
-        
-        // Show chips if we have any
-        if (this.chipsWrapper.children.length > 0) {
-            this.chipsWrapper.classList.add('visible');
-        } else {
-            this.chipsWrapper.classList.remove('visible');
-        }
+        // Let the chip manager handle all gate logic
+        this.chipManager.evaluateChips();
     }
     
-    // ← ADDED: Scanner handlers
+        // ← ADDED: Scanner handlers
     async handleProductScan() {
         if (!this.scannerUI) {
             console.error('[SafeSignal] Scanner UI not initialized');
             return;
         }
-        console.log('[SafeSignal] 🛒 Starting product scan...');
+        
+        // Get the extracted subject from chip manager
+        const extraction = await chipManager.subjectExtractor.extractSubject('product');
+        if (!extraction.subject) {
+            console.log('[SafeSignal] No product subject extracted');
+            return;
+        }
+        
+        console.log('[SafeSignal] 🛒 Starting product scan for:', extraction.subject);
         try {
-            await this.scannerUI.handleProductScan();
+            await this.scannerUI.handleProductScan(extraction.subject);
         } catch (error) {
             console.error('[SafeSignal] Product scan error:', error);
         }
     }
-    
+
+    // Similarly for handleHealthScan():
     async handleHealthScan() {
         if (!this.scannerUI) {
             console.error('[SafeSignal] Scanner UI not initialized');
             return;
         }
-        console.log('[SafeSignal] 🏥 Starting health scan...');
+        
+        // Get the extracted subject from chip manager
+        const extraction = await chipManager.subjectExtractor.extractSubject('health');
+        if (!extraction.subject) {
+            console.log('[SafeSignal] No health subject extracted');
+            return;
+        }
+        
+        console.log('[SafeSignal] 🏥 Starting health scan for:', extraction.subject);
         try {
-            await this.scannerUI.handleHealthScan();
+            await this.scannerUI.handleHealthScan(extraction.subject);
         } catch (error) {
             console.error('[SafeSignal] Health scan error:', error);
         }
