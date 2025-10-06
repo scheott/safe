@@ -5,7 +5,17 @@ const SAFESIGNAL_BUILD = 'content-2025-10-03-v4.1-scanner-wired';
 const API_BASE_URL = 'http://localhost:8000';
 
 console.info('[SafeSignal] Build:', SAFESIGNAL_BUILD);
+// services
 import chipManager from './services/chipManager.js';
+import pageClassifier from './services/pageClassifier.js';
+import intentScorer from './services/intentScorer.js';
+import subjectExtractor from './services/subjectExtractor.js';
+import chipCooldown from './services/chipCooldown.js';
+import chipCache from './services/chipCache.js';
+
+// components
+import AssistModal from './components/AssistModal.js'; // use .jsx if that's your file
+
 
 // ← ADDED: Import scanner modules
 import { PageScanner, ScannerUI, APIClient } from './scanners.js';
