@@ -6,16 +6,15 @@ const API_BASE_URL = 'http://localhost:8000';
 
 console.info('[SafeSignal] Build:', SAFESIGNAL_BUILD);
 // services
-import chipManager from './services/chipManager.js';
-import pageClassifier from './services/pageClassifier.js';
-import intentScorer from './services/intentScorer.js';
-import subjectExtractor from './services/subjectExtractor.js';
-import chipCooldown from './services/chipCooldown.js';
-import chipCache from './services/chipCache.js';
-
+// CORRECT - go up one level, then into services
+import { ChipManager } from './services/chipManager.js';
+import { PageClassifier } from './services/pageClassifier.js';
+import { IntentScorer } from './services/intentScorer.js';
+import { SubjectExtractor } from './services/subjectExtractor.js';
+import { ChipCooldown } from './services/chipCooldown.js';
+import { ChipCache } from './services/chipCache.js';
 // components
-import AssistModal from './components/AssistModal.js'; // use .jsx if that's your file
-
+import { AssistModal } from './components/AssistModal.js';
 
 // ← ADDED: Import scanner modules
 import { PageScanner, ScannerUI, APIClient } from './scanners.js';

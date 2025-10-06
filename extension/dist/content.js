@@ -1,10 +1,10 @@
 /******/ (() => { // webpackBootstrap
-/******/ 	"use strict";
 /******/ 	var __webpack_modules__ = ({
 
 /***/ 63:
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   Q9: () => (/* binding */ APIClient),
 /* harmony export */   Y7: () => (/* binding */ PageScanner),
@@ -973,10 +973,2092 @@ class ScannerUI {
 
 /***/ }),
 
+/***/ 264:
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   A: () => (__WEBPACK_DEFAULT_EXPORT__)
+/* harmony export */ });
+class ChipCooldown {
+  constructor() {
+    // Cooldown periods
+    this.urlCooldown = 30 * 60 * 1000;      // 30 minutes for same URL
+    this.originCooldown = 24 * 60 * 60 * 1000; // 24 hours for dismissed origins
+  }
+  
+  /**
+   * Check all cooldowns for a chip type
+   * @returns {object} { blocked: boolean, reason?: string }
+   */
+  async checkCooldowns(chipType) {
+    // Check same-URL cooldown
+    const urlCooldown = await this.isOnUrlCooldown(chipType);
+    if (urlCooldown) {
+      return { blocked: true, reason: 'url_cooldown' };
+    }
+    
+    // Check origin dismissal
+    const dismissed = await this.isDismissedOnOrigin(chipType);
+    if (dismissed) {
+      return { blocked: true, reason: 'user_dismissed' };
+    }
+    
+    return { blocked: false };
+  }
+  
+  /**
+   * Check if chip is on URL cooldown
+   */
+  async isOnUrlCooldown(chipType) {
+    const url = window.location.href;
+    const cooldownKey = `chip_cooldown:${chipType}:${url}`;
+    
+    try {
+      const result = await chrome.storage.local.get(cooldownKey);
+      const lastShown = result[cooldownKey];
+      
+      if (!lastShown) return false;
+      
+      const now = Date.now();
+      const remaining = (lastShown + this.urlCooldown) - now;
+      
+      if (remaining > 0) {
+        console.log(`[ChipCooldown] ${chipType} on cooldown for ${Math.round(remaining/1000)}s`);
+        
+        // Track analytics
+        this.trackEvent('chip_cooldown_active', {
+          chipType,
+          cooldownType: 'same_url',
+          remainingMs: remaining
+        });
+        
+        return true;
+      }
+      
+      // Cooldown expired, remove it
+      await chrome.storage.local.remove(cooldownKey);
+      return false;
+      
+    } catch (error) {
+      console.error('[ChipCooldown] Error checking URL cooldown:', error);
+      return false;
+    }
+  }
+  
+  /**
+   * Set URL cooldown for a chip
+   */
+  async setUrlCooldown(chipType) {
+    const url = window.location.href;
+    const cooldownKey = `chip_cooldown:${chipType}:${url}`;
+    
+    try {
+      await chrome.storage.local.set({
+        [cooldownKey]: Date.now()
+      });
+      
+      console.log(`[ChipCooldown] Set ${chipType} cooldown for 30min`);
+      
+      this.trackEvent('chip_cooldown_set', {
+        chipType,
+        url,
+        duration: '30min'
+      });
+      
+    } catch (error) {
+      console.error('[ChipCooldown] Error setting URL cooldown:', error);
+    }
+  }
+  
+  /**
+   * Check if chip is dismissed on this origin
+   */
+  async isDismissedOnOrigin(chipType) {
+    const origin = window.location.origin;
+    const dismissalKey = `chip_dismissed:${chipType}:${origin}`;
+    
+    try {
+      const result = await chrome.storage.local.get(dismissalKey);
+      const dismissedAt = result[dismissalKey];
+      
+      if (!dismissedAt) return false;
+      
+      const now = Date.now();
+      const remaining = (dismissedAt + this.originCooldown) - now;
+      
+      if (remaining > 0) {
+        console.log(`[ChipCooldown] ${chipType} dismissed on origin for ${Math.round(remaining/3600000)}h`);
+        return true;
+      }
+      
+      // Dismissal expired, remove it
+      await chrome.storage.local.remove(dismissalKey);
+      return false;
+      
+    } catch (error) {
+      console.error('[ChipCooldown] Error checking dismissal:', error);
+      return false;
+    }
+  }
+  
+  /**
+   * Dismiss chip on origin for 24 hours
+   */
+  async dismissChipOnOrigin(chipType) {
+    const origin = window.location.origin;
+    const dismissalKey = `chip_dismissed:${chipType}:${origin}`;
+    
+    try {
+      await chrome.storage.local.set({
+        [dismissalKey]: Date.now()
+      });
+      
+      console.log(`[ChipCooldown] Dismissed ${chipType} on ${origin} for 24h`);
+      
+      this.trackEvent('chip_dismissed_by_user', {
+        chipType,
+        origin,
+        duration: '24h'
+      });
+      
+    } catch (error) {
+      console.error('[ChipCooldown] Error setting dismissal:', error);
+    }
+  }
+  
+  /**
+   * Unhide chip on origin (called from badge menu)
+   */
+  async unhideChipOnOrigin(chipType) {
+    const origin = window.location.origin;
+    const dismissalKey = `chip_dismissed:${chipType}:${origin}`;
+    
+    try {
+      await chrome.storage.local.remove(dismissalKey);
+      
+      console.log(`[ChipCooldown] Unhid ${chipType} on ${origin}`);
+      
+      this.trackEvent('chip_unhidden_by_user', {
+        chipType,
+        origin
+      });
+      
+      // Trigger re-evaluation
+      if (window.chipManager) {
+        window.chipManager.reevaluate(chipType);
+      }
+      
+    } catch (error) {
+      console.error('[ChipCooldown] Error unhiding:', error);
+    }
+  }
+  
+  /**
+   * Get dismissal status for badge menu
+   */
+  async getDismissalStatus() {
+    const origin = window.location.origin;
+    
+    const [healthDismissed, productDismissed] = await Promise.all([
+      this.isDismissedOnOrigin('health'),
+      this.isDismissedOnOrigin('product')
+    ]);
+    
+    return {
+      health: healthDismissed,
+      product: productDismissed,
+      origin
+    };
+  }
+  
+  /**
+   * Track analytics event
+   */
+  trackEvent(eventName, data) {
+    console.log(`[ChipCooldown] ${eventName}:`, data);
+    
+    if (typeof analytics !== 'undefined' && analytics.track) {
+      analytics.track(eventName, data);
+    }
+  }
+}
+
+// Export classes
+/* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (ChipCooldown);
+
+/***/ }),
+
+/***/ 295:
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   A: () => (__WEBPACK_DEFAULT_EXPORT__)
+/* harmony export */ });
+// extension/src/components/AssistModal.js
+// User confirmation modal for borderline/generic subjects
+
+class AssistModal {
+  constructor() {
+    this.modal = null;
+    this.callback = null;
+    this.chipType = null;
+  }
+  
+  /**
+   * Show the assist modal
+   * @param {string} chipType - 'product' or 'health'
+   * @param {string} subject - Pre-filled subject
+   * @param {function} callback - Called with { action: 'confirm'|'dismiss', subject: string }
+   */
+  show(chipType, subject, callback) {
+    this.chipType = chipType;
+    this.callback = callback;
+    
+    // Remove any existing modal
+    this.hide();
+    
+    // Create modal
+    this.createModal(chipType, subject);
+    
+    // Add to page (inside shadow DOM if available)
+    const shadowRoot = document.getElementById('safesignal-host')?.shadowRoot;
+    if (shadowRoot) {
+      shadowRoot.appendChild(this.modal);
+    } else {
+      document.body.appendChild(this.modal);
+    }
+    
+    // Focus input
+    const input = this.modal.querySelector('#assist-subject-input');
+    if (input) {
+      input.focus();
+      input.select();
+    }
+    
+    // Track analytics
+    this.trackEvent('chip_assist_shown', {
+      chipType,
+      subject,
+      reason: 'needs_confirmation'
+    });
+  }
+  
+  /**
+   * Hide the modal
+   */
+  hide() {
+    if (this.modal && this.modal.parentNode) {
+      this.modal.parentNode.removeChild(this.modal);
+    }
+    this.modal = null;
+    this.callback = null;
+    this.chipType = null;
+  }
+  
+  /**
+   * Create the modal DOM
+   */
+  createModal(chipType, subject) {
+    const modal = document.createElement('div');
+    modal.className = 'assist-modal-overlay';
+    
+    // Determine button text based on chip type
+    const buttonText = chipType === 'health' ? 'Check with CDC/NIH' : 'Check this product';
+    const placeholder = chipType === 'health' ? 'e.g., Intermittent fasting' : 'e.g., Sony WH-1000XM5';
+    
+    modal.innerHTML = `
+      <div class="assist-modal">
+        <div class="assist-modal-header">
+          What should we check?
+        </div>
+        <div class="assist-modal-body">
+          <input 
+            type="text" 
+            id="assist-subject-input"
+            class="assist-input"
+            value="${this.escapeHtml(subject)}"
+            placeholder="${placeholder}"
+            maxlength="100"
+          />
+        </div>
+        <div class="assist-modal-footer">
+          <button class="assist-btn assist-btn-primary" id="assist-confirm">
+            ${buttonText}
+          </button>
+          <button class="assist-btn assist-btn-secondary" id="assist-dismiss">
+            Not now
+          </button>
+        </div>
+      </div>
+    `;
+    
+    // Add styles
+    this.addStyles(modal);
+    
+    // Add event listeners
+    this.attachEventListeners(modal, subject);
+    
+    this.modal = modal;
+  }
+  
+  /**
+   * Add modal styles
+   */
+  addStyles(modal) {
+    const style = document.createElement('style');
+    style.textContent = `
+      .assist-modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 2147483647;
+        animation: fadeIn 0.2s ease;
+      }
+      
+      .assist-modal {
+        background: white;
+        border-radius: 12px;
+        padding: 20px;
+        max-width: 400px;
+        width: 90%;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+        animation: slideIn 0.3s ease;
+      }
+      
+      .assist-modal-header {
+        font-size: 18px;
+        font-weight: 600;
+        color: #1a1a1a;
+        margin-bottom: 16px;
+      }
+      
+      .assist-modal-body {
+        margin-bottom: 20px;
+      }
+      
+      .assist-input {
+        width: 100%;
+        padding: 12px 16px;
+        font-size: 16px;
+        border: 2px solid #e0e0e0;
+        border-radius: 8px;
+        outline: none;
+        transition: border-color 0.2s;
+      }
+      
+      .assist-input:focus {
+        border-color: #2196f3;
+      }
+      
+      .assist-modal-footer {
+        display: flex;
+        gap: 12px;
+        justify-content: flex-end;
+      }
+      
+      .assist-btn {
+        padding: 10px 20px;
+        font-size: 15px;
+        font-weight: 600;
+        border-radius: 8px;
+        border: none;
+        cursor: pointer;
+        transition: all 0.2s;
+        outline: none;
+      }
+      
+      .assist-btn-primary {
+        background: #2196f3;
+        color: white;
+      }
+      
+      .assist-btn-primary:hover {
+        background: #1976d2;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(33, 150, 243, 0.3);
+      }
+      
+      .assist-btn-secondary {
+        background: #f5f5f5;
+        color: #666;
+      }
+      
+      .assist-btn-secondary:hover {
+        background: #e0e0e0;
+      }
+      
+      @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      
+      @keyframes slideIn {
+        from { 
+          transform: translateY(-20px);
+          opacity: 0;
+        }
+        to {
+          transform: translateY(0);
+          opacity: 1;
+        }
+      }
+    `;
+    
+    modal.appendChild(style);
+  }
+  
+  /**
+   * Attach event listeners to modal
+   */
+  attachEventListeners(modal, originalSubject) {
+    const confirmBtn = modal.querySelector('#assist-confirm');
+    const dismissBtn = modal.querySelector('#assist-dismiss');
+    const input = modal.querySelector('#assist-subject-input');
+    
+    // Confirm button
+    confirmBtn.addEventListener('click', () => {
+      const newSubject = input.value.trim();
+      if (newSubject) {
+        const edited = newSubject !== originalSubject;
+        
+        this.trackEvent('chip_assist_confirmed', {
+          chipType: this.chipType,
+          originalSubject,
+          confirmedSubject: newSubject,
+          edited
+        });
+        
+        if (this.callback) {
+          this.callback({ action: 'confirm', subject: newSubject, edited });
+        }
+        
+        this.hide();
+      }
+    });
+    
+    // Dismiss button
+    dismissBtn.addEventListener('click', () => {
+      this.trackEvent('chip_assist_dismissed', {
+        chipType: this.chipType,
+        subject: originalSubject
+      });
+      
+      if (this.callback) {
+        this.callback({ action: 'dismiss', subject: originalSubject });
+      }
+      
+      this.hide();
+    });
+    
+    // Enter key confirms
+    input.addEventListener('keyup', (e) => {
+      if (e.key === 'Enter') {
+        confirmBtn.click();
+      } else if (e.key === 'Escape') {
+        dismissBtn.click();
+      }
+    });
+    
+    // Click outside closes
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        dismissBtn.click();
+      }
+    });
+  }
+  
+  /**
+   * Helper: Escape HTML
+   */
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+  
+  /**
+   * Helper: Track analytics event
+   */
+  trackEvent(eventName, data) {
+    // Console logging for development
+    console.log(`[AssistModal] ${eventName}:`, data);
+    
+    // Send to analytics if available
+    if (typeof analytics !== 'undefined' && analytics.track) {
+      analytics.track(eventName, data);
+    }
+  }
+}
+
+// Export for use in chipManager
+/* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (AssistModal);
+
+/***/ }),
+
+/***/ 317:
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   A: () => (__WEBPACK_DEFAULT_EXPORT__)
+/* harmony export */ });
+// extension/src/services/intentScorer.js
+// Gate 1: Intent Scoring - Strict thresholds to prevent false positives
+// Product ≥0.85, Health ≥0.75 required to show chips
+
+class IntentScorer {
+  constructor() {
+    // STRICT thresholds (Week 1 conservative settings)
+    this.thresholds = {
+      product: 0.85,  // Very high confidence required
+      health: 0.75    // High confidence required
+    };
+    
+    // Medical terms for paired detection
+    this.medicalTerms = {
+      conditions: [
+        'diabetes', 'cancer', 'heart disease', 'arthritis', 'anxiety', 'depression',
+        'insomnia', 'obesity', 'pain', 'inflammation', 'infection', 'sleep quality',
+        'blood pressure', 'cholesterol', 'immune system', 'digestion', 'covid',
+        'alzheimer', 'dementia', 'stroke', 'asthma', 'copd', 'migraine',
+        'hypertension', 'fatigue', 'stress', 'metabolism', 'cognitive decline'
+      ],
+      therapies: [
+        'vitamin', 'supplement', 'medication', 'drug', 'therapy', 'treatment',
+        'diet', 'exercise', 'fasting', 'meditation', 'acupuncture', 'surgery',
+        'remedy', 'cure', 'medicine', 'pill', 'dosage', 'prescription',
+        'vaccine', 'injection', 'procedure', 'rehabilitation', 'counseling'
+      ],
+      claimVerbs: [
+        'cures', 'treats', 'prevents', 'reverses', 'eliminates', 'fixes',
+        'reduces', 'improves', 'helps', 'alleviates', 'manages', 'controls',
+        'boosts', 'enhances', 'supports', 'relieves', 'heals', 'restores',
+        'combats', 'fights', 'addresses', 'mitigates', 'remedies'
+      ]
+    };
+  }
+  
+  /**
+   * Score product intent
+   * @returns {object} { score: number, signals: object, threshold: number }
+   */
+  async scoreProductIntent() {
+    const signals = this.detectProductSignals();
+    const score = this.calculateProductScore(signals);
+    
+    // Log borderline cases for tuning
+    if (score >= 0.55 && score < this.thresholds.product) {
+      this.logBorderlineCase('product', score, signals);
+    }
+    
+    console.log('[IntentScorer] Product intent:', {
+      score,
+      threshold: this.thresholds.product,
+      passes: score >= this.thresholds.product,
+      signals
+    });
+    
+    return { score, signals, threshold: this.thresholds.product };
+  }
+  
+  /**
+   * Score health intent with medical term pairing
+   * @returns {object} { score: number, signals: object, threshold: number }
+   */
+  async scoreHealthIntent() {
+    const signals = this.detectHealthSignals();
+    const score = this.calculateHealthScore(signals);
+    
+    // Log borderline cases for tuning
+    if (score >= 0.55 && score < this.thresholds.health) {
+      this.logBorderlineCase('health', score, signals);
+    }
+    
+    console.log('[IntentScorer] Health intent:', {
+      score,
+      threshold: this.thresholds.health,
+      passes: score >= this.thresholds.health,
+      signals
+    });
+    
+    return { score, signals, threshold: this.thresholds.health };
+  }
+  
+  /**
+   * Detect product signals
+   */
+  detectProductSignals() {
+    const signals = {
+      hasProductSchema: false,
+      hasCommerceUI: false,
+      hasProductURL: false,
+      hasBreadcrumb: false,
+      rawIndicators: []
+    };
+    
+    // Check for Product schema (0.4 weight)
+    const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+    for (const script of jsonLdScripts) {
+      try {
+        const data = JSON.parse(script.textContent);
+        if (data['@type'] === 'Product' || 
+            (data['@graph'] && data['@graph'].some(item => item['@type'] === 'Product'))) {
+          signals.hasProductSchema = true;
+          signals.rawIndicators.push('product_schema');
+          break;
+        }
+      } catch (e) {}
+    }
+    
+    // Check for commerce UI elements (0.3 weight)
+    const priceElement = document.querySelector(
+      '[class*="price"]:not([class*="priceless"]), [itemprop="price"], ' +
+      '[data-price], .product-price, .item-price'
+    );
+    
+    const ctaButton = document.querySelector(
+      'button[class*="add-to-cart"], button[class*="addToCart"], ' +
+      'button[class*="buy"], button[data-testid*="add-to-cart"], ' +
+      'button[type="submit"][value*="cart"], .add-to-bag'
+    );
+    
+    if (priceElement && ctaButton) {
+      // Check proximity (within 3 DOM levels)
+      let element = priceElement;
+      let levels = 0;
+      while (element && levels < 3) {
+        element = element.parentElement;
+        if (element && element.contains(ctaButton)) {
+          signals.hasCommerceUI = true;
+          signals.rawIndicators.push('price_and_cta_nearby');
+          break;
+        }
+        levels++;
+      }
+    }
+    
+    // Check for product URL patterns (0.2 weight)
+    const productPatterns = [
+      /\/dp\/[A-Z0-9]+/i,  // Amazon
+      /\/p\/[^/]+/i,       // Target
+      /\/product\/[^/]+/i,
+      /\/pd\/[^/]+/i,
+      /\/item\/[^/]+/i,
+      /\/ip\/[^/]+/i       // Walmart
+    ];
+    
+    const pathname = window.location.pathname;
+    if (productPatterns.some(pattern => pattern.test(pathname))) {
+      signals.hasProductURL = true;
+      signals.rawIndicators.push('product_url_pattern');
+    }
+    
+    // Check for breadcrumb with specific product (0.1 weight)
+    const breadcrumbs = document.querySelectorAll(
+      'nav[aria-label*="breadcrumb"] li:last-child, ' +
+      '.breadcrumb li:last-child, ' +
+      '[class*="breadcrumb"] > *:last-child'
+    );
+    
+    for (const crumb of breadcrumbs) {
+      const text = crumb.textContent.trim().toLowerCase();
+      // Check if it's not generic
+      const genericTerms = ['home', 'shop', 'products', 'category', 'all'];
+      if (text.length > 3 && !genericTerms.some(term => text.includes(term))) {
+        signals.hasBreadcrumb = true;
+        signals.rawIndicators.push('specific_breadcrumb');
+        break;
+      }
+    }
+    
+    return signals;
+  }
+  
+  /**
+   * Calculate product score from signals
+   */
+  calculateProductScore(signals) {
+    let score = 0;
+    
+    // Weight distribution (must sum to 1.0)
+    const weights = {
+      hasProductSchema: 0.4,
+      hasCommerceUI: 0.3,
+      hasProductURL: 0.2,
+      hasBreadcrumb: 0.1
+    };
+    
+    if (signals.hasProductSchema) score += weights.hasProductSchema;
+    if (signals.hasCommerceUI) score += weights.hasCommerceUI;
+    if (signals.hasProductURL) score += weights.hasProductURL;
+    if (signals.hasBreadcrumb) score += weights.hasBreadcrumb;
+    
+    return Math.min(score, 1.0);
+  }
+  
+  /**
+   * Detect health signals with medical pairing
+   */
+  detectHealthSignals() {
+    const signals = {
+      hasArticleSchema: false,
+      hasHealthURL: false,
+      hasMedicalTerms: false,
+      isHealthSection: false,
+      medicalPairings: [],
+      rawIndicators: []
+    };
+    
+    // Check for Article schema (0.3 weight)
+    const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+    for (const script of jsonLdScripts) {
+      try {
+        const data = JSON.parse(script.textContent);
+        if (['Article', 'NewsArticle', 'MedicalWebPage', 'BlogPosting'].includes(data['@type'])) {
+          signals.hasArticleSchema = true;
+          signals.rawIndicators.push('article_schema');
+          break;
+        }
+      } catch (e) {}
+    }
+    
+    // Check for health URL patterns (0.3 weight)
+    const healthPatterns = [
+      /\/health\//i, /\/conditions\//i, /\/medical\//i,
+      /\/diseases\//i, /\/treatment\//i, /\/symptoms\//i,
+      /\/nutrition\//i, /\/wellness\//i, /\/medicine\//i
+    ];
+    
+    const pathname = window.location.pathname;
+    if (healthPatterns.some(pattern => pattern.test(pathname))) {
+      signals.hasHealthURL = true;
+      signals.rawIndicators.push('health_url_pattern');
+    }
+    
+    // Check for medical term pairing (0.3 weight)
+    const medicalScore = this.calculateMedicalTermScore();
+    if (medicalScore.score > 0) {
+      signals.hasMedicalTerms = true;
+      signals.medicalPairings = medicalScore.pairings;
+      signals.rawIndicators.push('medical_term_pairs');
+    }
+    
+    // Check if on health site (0.1 weight)
+    const healthSites = [
+      'healthline.com', 'webmd.com', 'mayoclinic.org', 'medlineplus.gov',
+      'cdc.gov', 'nih.gov', 'who.int', 'clevelandclinic.org'
+    ];
+    
+    const hostname = window.location.hostname.replace('www.', '');
+    if (healthSites.some(site => hostname.includes(site))) {
+      signals.isHealthSection = true;
+      signals.rawIndicators.push('health_domain');
+    }
+    
+    return signals;
+  }
+  
+  /**
+   * Calculate medical term pairing score
+   * CRITICAL: Requires condition + therapy + claim verb in proximity
+   */
+  calculateMedicalTermScore() {
+    // Get main content text
+    const contentElements = document.querySelectorAll(
+      'main, article, [role="main"], .content, .article-body'
+    );
+    
+    let contentText = '';
+    for (const element of contentElements) {
+      contentText += (element.textContent || '') + ' ';
+    }
+    
+    if (!contentText) {
+      contentText = document.body.textContent || '';
+    }
+    
+    // Limit to first 3000 chars for performance
+    contentText = contentText.substring(0, 3000).toLowerCase();
+    
+    // Split into sentences for proximity checking
+    const sentences = contentText.split(/[.!?]+/);
+    
+    const foundPairings = [];
+    let pairingCount = 0;
+    
+    for (const sentence of sentences) {
+      const hasCondition = this.medicalTerms.conditions.some(term => 
+        sentence.includes(term.toLowerCase())
+      );
+      const hasTherapy = this.medicalTerms.therapies.some(term => 
+        sentence.includes(term.toLowerCase())
+      );
+      const hasClaim = this.medicalTerms.claimVerbs.some(verb => 
+        sentence.includes(verb.toLowerCase())
+      );
+      
+      // All three must be present in the same sentence
+      if (hasCondition && hasTherapy && hasClaim) {
+        pairingCount++;
+        
+        // Extract the specific pairing for logging
+        const condition = this.medicalTerms.conditions.find(term => 
+          sentence.includes(term.toLowerCase())
+        );
+        const therapy = this.medicalTerms.therapies.find(term => 
+          sentence.includes(term.toLowerCase())
+        );
+        const claim = this.medicalTerms.claimVerbs.find(verb => 
+          sentence.includes(verb.toLowerCase())
+        );
+        
+        if (foundPairings.length < 3) {  // Limit logging
+          foundPairings.push(`${condition} + ${therapy} + ${claim}`);
+        }
+      }
+    }
+    
+    // Calculate density: need at least 3 paired terms per 100 words
+    const wordCount = contentText.split(/\s+/).length;
+    const density = pairingCount / (wordCount / 100);
+    
+    console.log('[IntentScorer] Medical term analysis:', {
+      pairingCount,
+      wordCount,
+      density,
+      pairings: foundPairings
+    });
+    
+    return {
+      score: density >= 3 ? 0.3 : 0,
+      pairings: foundPairings,
+      density
+    };
+  }
+  
+  /**
+   * Calculate health score from signals
+   */
+  calculateHealthScore(signals) {
+    let score = 0;
+    
+    // Weight distribution
+    const weights = {
+      hasArticleSchema: 0.3,
+      hasHealthURL: 0.3,
+      hasMedicalTerms: 0.3,
+      isHealthSection: 0.1
+    };
+    
+    if (signals.hasArticleSchema) score += weights.hasArticleSchema;
+    if (signals.hasHealthURL) score += weights.hasHealthURL;
+    if (signals.hasMedicalTerms) score += weights.hasMedicalTerms;
+    if (signals.isHealthSection) score += weights.isHealthSection;
+    
+    return Math.min(score, 1.0);
+  }
+  
+  /**
+   * Log borderline cases for future tuning
+   */
+  logBorderlineCase(chipType, score, signals) {
+    console.warn(`[IntentScorer] BORDERLINE ${chipType.toUpperCase()} case for tuning:`, {
+      url: window.location.href,
+      chipType,
+      score,
+      threshold: this.thresholds[chipType],
+      gap: this.thresholds[chipType] - score,
+      signals,
+      timestamp: new Date().toISOString(),
+      recommendation: 'Review this case for threshold adjustment'
+    });
+    
+    // Send to analytics if available
+    if (typeof analytics !== 'undefined' && analytics.track) {
+      analytics.track('chip_intent_borderline', {
+        chipType,
+        score,
+        threshold: this.thresholds[chipType],
+        url: window.location.href,
+        signals: signals.rawIndicators
+      });
+    }
+  }
+  
+  /**
+   * Get current scores for both chip types
+   */
+  async getBothScores() {
+    const [productResult, healthResult] = await Promise.all([
+      this.scoreProductIntent(),
+      this.scoreHealthIntent()
+    ]);
+    
+    return {
+      product: productResult,
+      health: healthResult
+    };
+  }
+}
+
+// Export for use in chipManager
+/* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (IntentScorer);
+
+/***/ }),
+
+/***/ 354:
+/***/ ((__unused_webpack_module, __unused_webpack___webpack_exports__, __webpack_require__) => {
+
+"use strict";
+/* harmony import */ var _pageClassifier_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(737);
+/* harmony import */ var _intentScorer_js__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(317);
+/* harmony import */ var _subjectExtractor_js__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(431);
+/* harmony import */ var _components_AssistModal_js__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(295);
+/* harmony import */ var _chipCache_js__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(423);
+/* harmony import */ var _chipCache_js__WEBPACK_IMPORTED_MODULE_4___default = /*#__PURE__*/__webpack_require__.n(_chipCache_js__WEBPACK_IMPORTED_MODULE_4__);
+/* harmony import */ var _chipCooldown_js__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(264);
+// extension/src/services/chipManager.js
+// Orchestrates all 3 gates and controls chip visibility
+// IMPORTANT: Never affects badge - badge always shows
+
+
+
+
+
+
+
+
+class ChipManager {
+  constructor() {
+    // Gate services
+    this.pageClassifier = new _pageClassifier_js__WEBPACK_IMPORTED_MODULE_0__/* ["default"] */ .A();
+    this.intentScorer = new _intentScorer_js__WEBPACK_IMPORTED_MODULE_1__/* ["default"] */ .A();
+    this.subjectExtractor = new _subjectExtractor_js__WEBPACK_IMPORTED_MODULE_2__/* ["default"] */ .A();
+    
+    // UI components
+    this.assistModal = new _components_AssistModal_js__WEBPACK_IMPORTED_MODULE_3__/* ["default"] */ .A();
+    
+    // Caching & cooldowns
+    this.cache = new (_chipCache_js__WEBPACK_IMPORTED_MODULE_4___default())();
+    this.cooldown = new _chipCooldown_js__WEBPACK_IMPORTED_MODULE_5__/* ["default"] */ .A();
+    
+    // Analytics tracking
+    this.lastIntentScores = {
+      product: null,
+      health: null
+    };
+    
+    // Current chip states
+    this.chipStates = {
+      product: { visible: false, subject: null },
+      health: { visible: false, subject: null }
+    };
+  }
+  
+  /**
+   * Main entry point - evaluate if chips should be shown
+   * Called on page load and SPA navigation
+   */
+  async evaluateChips() {
+    console.log('[ChipManager] ========== EVALUATING CHIPS ==========');
+    const startTime = performance.now();
+    
+    // Run both chip evaluations in parallel
+    const [productResult, healthResult] = await Promise.all([
+      this.shouldShowChip('product'),
+      this.shouldShowChip('health')
+    ]);
+    
+    const evalTime = performance.now() - startTime;
+    console.log(`[ChipManager] Evaluation complete in ${evalTime.toFixed(0)}ms`, {
+      product: productResult,
+      health: healthResult
+    });
+    
+    // Update UI based on results
+    this.updateChipDisplay('product', productResult);
+    this.updateChipDisplay('health', healthResult);
+  }
+  
+  /**
+   * Determine if a chip should be shown (runs all 3 gates)
+   * @param {string} chipType - 'product' or 'health'
+   * @returns {object} { show: boolean, state: string, subject?: string, reason?: string }
+   */
+  async shouldShowChip(chipType) {
+    console.log(`[ChipManager] Checking ${chipType} chip...`);
+    
+    // ==================== GATE 0: Page Type ====================
+    const pageType = this.pageClassifier.classify();
+    console.log(`[ChipManager] Gate 0 - Page type: ${pageType}`);
+    
+    // Block chips on SERPs, portals, and ambiguous pages
+    if (['serp', 'portal', 'ambiguous'].includes(pageType)) {
+      this.trackGateBlocked(0, chipType, 'wrong_page_type', { pageType });
+      return { show: false, reason: 'wrong_page_type', pageType };
+    }
+    
+    // Check page type matches chip type
+    if (chipType === 'product' && pageType !== 'product') {
+      this.trackGateBlocked(0, chipType, 'not_product_page', { pageType });
+      return { show: false, reason: 'not_product_page' };
+    }
+    
+    if (chipType === 'health' && pageType !== 'article') {
+      this.trackGateBlocked(0, chipType, 'not_health_article', { pageType });
+      return { show: false, reason: 'not_health_article' };
+    }
+    
+    // ==================== CHECK COOLDOWNS ====================
+    // Before Gate 1, check if we're on cooldown
+    const cooldownStatus = await this.cooldown.checkCooldowns(chipType);
+    if (cooldownStatus.blocked) {
+      console.log(`[ChipManager] ${chipType} chip on cooldown:`, cooldownStatus.reason);
+      return { show: false, reason: cooldownStatus.reason };
+    }
+    
+    // ==================== GATE 1: Intent Score ====================
+    const intentResult = chipType === 'product' 
+      ? await this.intentScorer.scoreProductIntent()
+      : await this.intentScorer.scoreHealthIntent();
+    
+    const { score, threshold, signals } = intentResult;
+    this.lastIntentScores[chipType] = score;
+    
+    console.log(`[ChipManager] Gate 1 - Intent score: ${score.toFixed(2)} (threshold: ${threshold})`);
+    
+    // Log borderline cases for future tuning
+    if (score >= 0.55 && score < threshold) {
+      console.warn(`[ChipManager] BORDERLINE ${chipType} case:`, {
+        score,
+        threshold,
+        gap: threshold - score,
+        url: window.location.href
+      });
+    }
+    
+    // Check if intent is too low
+    if (score < threshold) {
+      this.trackGateBlocked(1, chipType, 'low_intent', { score, threshold, signals });
+      return { show: false, reason: 'low_intent', score };
+    }
+    
+    // ==================== GATE 2: Subject Specificity ====================
+    const extraction = await this.subjectExtractor.extractSubject(chipType);
+    console.log(`[ChipManager] Gate 2 - Subject extraction:`, extraction);
+    
+    // If extraction failed completely
+    if (!extraction.subject) {
+      this.trackGateBlocked(2, chipType, 'no_subject', {});
+      return { show: false, reason: 'no_subject' };
+    }
+    
+    // If subject needs confirmation (generic/borderline)
+    if (extraction.needsConfirm) {
+      this.trackGateBlocked(2, chipType, 'needs_confirmation', {
+        subject: extraction.subject,
+        failReason: extraction.failReason
+      });
+      
+      // Show assist modal for user confirmation
+      return {
+        show: true,
+        state: 'needs_confirm',
+        subject: extraction.subject,
+        failReason: extraction.failReason
+      };
+    }
+    
+    // ==================== ALL GATES PASSED ====================
+    this.trackGatesPassed(chipType, score, extraction.subject);
+    
+    // Set cooldown for this URL
+    await this.cooldown.setUrlCooldown(chipType);
+    
+    return {
+      show: true,
+      state: 'ready',
+      subject: extraction.subject,
+      confidence: extraction.confidence
+    };
+  }
+  
+  /**
+   * Update chip display based on evaluation result
+   */
+  updateChipDisplay(chipType, result) {
+    const chipElement = this.getChipElement(chipType);
+    if (!chipElement) return;
+    
+    if (!result.show) {
+      // Hide chip
+      chipElement.style.display = 'none';
+      chipElement.classList.remove('visible');
+      this.chipStates[chipType] = { visible: false, subject: null };
+      
+    } else if (result.state === 'needs_confirm') {
+      // Show assist modal
+      chipElement.style.display = 'none'; // Hide chip until confirmed
+      
+      this.assistModal.show(chipType, result.subject, (response) => {
+        if (response.action === 'confirm') {
+          // User confirmed - show chip with edited subject
+          this.showChipWithSubject(chipType, response.subject);
+        } else {
+          // User dismissed - set dismissal cooldown
+          this.cooldown.dismissChipOnOrigin(chipType);
+        }
+      });
+      
+    } else if (result.state === 'ready') {
+      // Show chip immediately
+      this.showChipWithSubject(chipType, result.subject);
+    }
+  }
+  
+  /**
+   * Show chip with specific subject
+   */
+  showChipWithSubject(chipType, subject) {
+    const chipElement = this.getChipElement(chipType);
+    if (!chipElement) return;
+    
+    // Update chip content if needed
+    const subjectSpan = chipElement.querySelector('.chip-subject');
+    if (subjectSpan) {
+      subjectSpan.textContent = this.truncateSubject(subject);
+    }
+    
+    // Show chip
+    chipElement.style.display = 'flex';
+    chipElement.classList.add('visible');
+    chipElement.setAttribute('data-subject', subject);
+    
+    this.chipStates[chipType] = { visible: true, subject };
+    
+    // Update chips wrapper visibility
+    this.updateChipsWrapperVisibility();
+    
+    console.log(`[ChipManager] ${chipType} chip shown with subject: ${subject}`);
+  }
+  
+  /**
+   * Get chip DOM element
+   */
+    getChipElement(chipType) {
+        // Get from the callbacks provided by content.js
+        if (this.chipElements && this.chipElements[chipType]) {
+            return this.chipElements[chipType]();
+        }
+        return null;
+    }
+  
+  /**
+   * Update chips wrapper visibility
+   */
+    updateChipsWrapperVisibility() {
+        if (this.chipElements && this.chipElements.wrapper) {
+            const wrapper = this.chipElements.wrapper();
+            if (!wrapper) return;
+            
+            const hasVisibleChips = this.chipStates.product.visible || this.chipStates.health.visible;
+            
+            if (hasVisibleChips) {
+                wrapper.classList.add('visible');
+            } else {
+                wrapper.classList.remove('visible');
+            }
+        }
+    }
+  
+  /**
+   * Truncate subject for display
+   */
+  truncateSubject(subject) {
+    const maxLength = 40;
+    if (subject.length <= maxLength) return subject;
+    return subject.substring(0, maxLength - 3) + '...';
+  }
+  
+  /**
+   * Re-evaluate chips (called after unhide or variant change)
+   */
+  async reevaluate(chipType = null) {
+    console.log(`[ChipManager] Re-evaluating ${chipType || 'all'} chips`);
+    
+    if (chipType) {
+      // Re-evaluate specific chip
+      const result = await this.shouldShowChip(chipType);
+      this.updateChipDisplay(chipType, result);
+    } else {
+      // Re-evaluate all chips
+      await this.evaluateChips();
+    }
+  }
+  
+  /**
+   * Handle variant change (product pages)
+   */
+  async handleVariantChange() {
+    console.log('[ChipManager] Variant changed, clearing product cache');
+    
+    // Clear product cache for this page
+    await this.cache.clearProductCache(window.location.hostname);
+    
+    // Re-evaluate product chip
+    await this.reevaluate('product');
+    
+    this.trackEvent('product_variant_changed', {
+      hostname: window.location.hostname,
+      triggerReason: 'user_selected_variant'
+    });
+  }
+  
+  /**
+   * Get last intent score (for debugging)
+   */
+  getLastIntentScore(chipType) {
+    return this.lastIntentScores[chipType];
+  }
+  
+  // ==================== ANALYTICS TRACKING ====================
+  
+  trackGateBlocked(gate, chipType, reason, details) {
+    const event = {
+      gate,
+      chipType,
+      reason,
+      ...details,
+      url: window.location.href,
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log(`[ChipManager] Gate ${gate} blocked:`, event);
+    
+    if (typeof analytics !== 'undefined' && analytics.track) {
+      analytics.track('chip_gate_blocked', event);
+    }
+  }
+  
+  trackGatesPassed(chipType, score, subject) {
+    const event = {
+      chipType,
+      score,
+      subject,
+      url: window.location.href,
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log('[ChipManager] All gates passed:', event);
+    
+    if (typeof analytics !== 'undefined' && analytics.track) {
+      analytics.track('chip_gates_passed', event);
+    }
+  }
+  
+  trackEvent(eventName, data) {
+    console.log(`[ChipManager] ${eventName}:`, data);
+    
+    if (typeof analytics !== 'undefined' && analytics.track) {
+      analytics.track(eventName, data);
+    }
+  }
+}
+
+// Export singleton instance
+const chipManager = new ChipManager();
+
+// Auto-initialize on DOM ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    chipManager.evaluateChips();
+  });
+} else {
+  // DOM already loaded
+  setTimeout(() => chipManager.evaluateChips(), 100);
+}
+
+// Listen for SPA navigation
+let lastUrl = window.location.href;
+const urlObserver = new MutationObserver(() => {
+  const currentUrl = window.location.href;
+  if (currentUrl !== lastUrl) {
+    lastUrl = currentUrl;
+    setTimeout(() => chipManager.evaluateChips(), 500);
+  }
+});
+
+urlObserver.observe(document.body, {
+  childList: true,
+  subtree: true
+});
+
+// Export for extension integration
+/* unused harmony default export */ var __WEBPACK_DEFAULT_EXPORT__ = ((/* unused pure expression or super */ null && (chipManager)));
+
+/***/ }),
+
+/***/ 423:
+/***/ (() => {
+
+// extension/src/services/chipCache.js
+// Caching service for chip scan results
+
+class ChipCache {
+  constructor() {
+    this.cacheTimeout = 30 * 60 * 1000; // 30 minutes
+    this.storageKey = 'safesignal_scan_cache';
+  }
+  
+  /**
+   * Get cache key for a scan
+   */
+  getCacheKey(chipType, subject, variant = null) {
+    const hostname = window.location.hostname;
+    const normalizedSubject = this.normalizeForCache(subject);
+    const variantSuffix = variant ? `:${this.normalizeForCache(variant)}` : '';
+    
+    return `${chipType}_scan:${hostname}:${normalizedSubject}${variantSuffix}`;
+  }
+  
+  /**
+   * Normalize text for cache key
+   */
+  normalizeForCache(text) {
+    if (!text) return '';
+    return text.toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+  }
+  
+  /**
+   * Get cached scan result
+   */
+  async getCachedScan(cacheKey) {
+    try {
+      const result = await chrome.storage.local.get(this.storageKey);
+      const cache = result[this.storageKey] || {};
+      
+      const entry = cache[cacheKey];
+      if (!entry) return null;
+      
+      // Check expiry
+      const now = Date.now();
+      if (now - entry.timestamp > this.cacheTimeout) {
+        // Expired, remove it
+        delete cache[cacheKey];
+        await chrome.storage.local.set({ [this.storageKey]: cache });
+        return null;
+      }
+      
+      console.log('[ChipCache] Cache hit:', cacheKey);
+      return entry.data;
+      
+    } catch (error) {
+      console.error('[ChipCache] Error reading cache:', error);
+      return null;
+    }
+  }
+  
+  /**
+   * Set cached scan result
+   */
+  async setCachedScan(cacheKey, data) {
+    try {
+      const result = await chrome.storage.local.get(this.storageKey);
+      const cache = result[this.storageKey] || {};
+      
+      cache[cacheKey] = {
+        data,
+        timestamp: Date.now()
+      };
+      
+      // Limit cache size (keep most recent 50 entries)
+      const entries = Object.entries(cache);
+      if (entries.length > 50) {
+        entries.sort((a, b) => b[1].timestamp - a[1].timestamp);
+        const keepEntries = entries.slice(0, 50);
+        const newCache = Object.fromEntries(keepEntries);
+        await chrome.storage.local.set({ [this.storageKey]: newCache });
+      } else {
+        await chrome.storage.local.set({ [this.storageKey]: cache });
+      }
+      
+      console.log('[ChipCache] Cached result:', cacheKey);
+      
+    } catch (error) {
+      console.error('[ChipCache] Error writing cache:', error);
+    }
+  }
+  
+  /**
+   * Clear cache for a specific hostname
+   */
+  async clearHostnameCache(hostname) {
+    try {
+      const result = await chrome.storage.local.get(this.storageKey);
+      const cache = result[this.storageKey] || {};
+      
+      const keysToDelete = Object.keys(cache).filter(key => 
+        key.includes(`:${hostname}:`)
+      );
+      
+      keysToDelete.forEach(key => delete cache[key]);
+      
+      await chrome.storage.local.set({ [this.storageKey]: cache });
+      
+      console.log(`[ChipCache] Cleared ${keysToDelete.length} entries for ${hostname}`);
+      
+    } catch (error) {
+      console.error('[ChipCache] Error clearing cache:', error);
+    }
+  }
+  
+  /**
+   * Clear product cache (called on variant change)
+   */
+  async clearProductCache(hostname) {
+    try {
+      const result = await chrome.storage.local.get(this.storageKey);
+      const cache = result[this.storageKey] || {};
+      
+      const keysToDelete = Object.keys(cache).filter(key => 
+        key.startsWith('product_scan:') && key.includes(`:${hostname}:`)
+      );
+      
+      keysToDelete.forEach(key => delete cache[key]);
+      
+      await chrome.storage.local.set({ [this.storageKey]: cache });
+      
+      console.log(`[ChipCache] Cleared ${keysToDelete.length} product entries`);
+      
+    } catch (error) {
+      console.error('[ChipCache] Error clearing product cache:', error);
+    }
+  }
+}
+
+
+
+/***/ }),
+
+/***/ 431:
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   A: () => (__WEBPACK_DEFAULT_EXPORT__)
+/* harmony export */ });
+// extension/src/services/subjectExtractor.js
+// Gate 2: Subject Extraction with Specificity Validation
+// Blocks generic subjects like "Apple", "Health", "New Deals"
+
+class SubjectExtractor {
+  constructor() {
+    // Generic terms that auto-fail specificity check
+    this.genericTerms = [
+      // Navigation/structure
+      'home', 'shop', 'product', 'products', 'category', 'categories',
+      'search', 'results', 'browse', 'all', 'more', 'page',
+      
+      // Commerce
+      'deals', 'deal', 'sale', 'sales', 'clearance', 'outlet', 'discount',
+      'gifts', 'gift', 'new', 'top', 'best', 'featured', 'trending',
+      
+      // Content types
+      'blog', 'blogs', 'article', 'articles', 'news', 'about', 'help', 
+      'support', 'faq', 'contact', 'info', 'guide', 'tutorial',
+      
+      // Departments (retail)
+      'clothing', 'apparel', 'electronics', 'furniture', 'toys', 'books',
+      'beauty', 'health', 'wellness', 'fitness', 'sports', 'outdoor',
+      'men', 'mens', 'women', 'womens', 'kids', 'baby', 'home',
+      
+      // Generic health
+      'wellness', 'health', 'medical', 'healthcare', 'treatment', 'therapy',
+      'medicine', 'condition', 'symptom', 'disease'
+    ];
+    
+    // Model/variant patterns that count as specific
+    this.modelPatterns = [
+      /^[A-Z]{2,3}$/,              // SE, XL, XS, Pro, Max
+      /^\d+[A-Z]+$/,               // 5G, 128GB, 4K
+      /^[A-Z]\d+$/,                // M1, M2, S23
+      /^v?\d+(\.\d+)?$/            // v2, 2.0, 13
+    ];
+    
+    // Brand-only terms that fail specificity for products
+    this.brandOnlyTerms = [
+      'apple', 'amazon', 'target', 'walmart', 'bestbuy', 'ebay',
+      'nike', 'adidas', 'samsung', 'google', 'microsoft', 'sony'
+    ];
+    
+    // Site-specific adapters
+    this.siteAdapters = this.initializeSiteAdapters();
+  }
+  
+  /**
+   * Main extraction method
+   * @param {string} chipType - 'product' or 'health'
+   * @returns {object} { subject, confidence, needsConfirm, failReason?, extractionMethod }
+   */
+  async extractSubject(chipType) {
+    let extraction;
+    
+    // Try site-specific adapter first
+    extraction = this.tryAdapterExtraction(chipType);
+    
+    // Fall back to generic extraction
+    if (!extraction || !extraction.subject) {
+      extraction = this.genericExtraction(chipType);
+    }
+    
+    // Validate specificity
+    const specificityResult = this.checkSpecificity(extraction.subject, chipType);
+    
+    if (!specificityResult.pass) {
+      extraction.confidence = 'low';
+      extraction.needsConfirm = true;
+      extraction.failReason = specificityResult.reason;
+    } else {
+      // Update subject if it was truncated
+      if (specificityResult.subject !== extraction.subject) {
+        extraction.subject = specificityResult.subject;
+      }
+      extraction.needsConfirm = extraction.confidence === 'low';
+    }
+    
+    console.log('[SubjectExtractor] Extraction result:', extraction);
+    
+    return extraction;
+  }
+  
+  /**
+   * Try site-specific adapter extraction
+   */
+  tryAdapterExtraction(chipType) {
+    const hostname = window.location.hostname.replace('www.', '');
+    const adapterKey = hostname.replace(/\./g, '_');
+    
+    if (this.siteAdapters[adapterKey]) {
+      const adapter = this.siteAdapters[adapterKey];
+      
+      try {
+        if (chipType === 'product' && adapter.productName) {
+          const subject = adapter.productName();
+          if (subject) {
+            return {
+              subject,
+              confidence: 'high',
+              needsConfirm: false,
+              extractionMethod: `adapter_${adapterKey}`
+            };
+          }
+        } else if (chipType === 'health' && adapter.healthTopic) {
+          const subject = adapter.healthTopic();
+          if (subject) {
+            return {
+              subject,
+              confidence: 'high',
+              needsConfirm: false,
+              extractionMethod: `adapter_${adapterKey}`
+            };
+          }
+        }
+      } catch (e) {
+        console.warn(`[SubjectExtractor] Adapter failed for ${adapterKey}:`, e);
+      }
+    }
+    
+    return null;
+  }
+  
+  /**
+   * Generic extraction for any site
+   */
+  genericExtraction(chipType) {
+    if (chipType === 'product') {
+      return this.extractProductSubject();
+    } else {
+      return this.extractHealthSubject();
+    }
+  }
+  
+  /**
+   * Extract product subject
+   */
+  extractProductSubject() {
+    let subject = '';
+    let extractionMethod = '';
+    
+    // 1. Try JSON-LD Product.name (with variant if available)
+    const jsonLd = this.extractFromJsonLd('Product');
+    if (jsonLd && jsonLd.name) {
+      subject = jsonLd.name;
+      
+      // Check for selected variant
+      if (jsonLd.offers && Array.isArray(jsonLd.offers)) {
+        const selectedOffer = jsonLd.offers.find(o => o.availability === 'InStock');
+        if (selectedOffer && selectedOffer.name) {
+          subject = selectedOffer.name;
+        }
+      }
+      extractionMethod = 'json_ld_product_name';
+    }
+    
+    // 2. Try Open Graph title
+    if (!subject) {
+      const ogTitle = document.querySelector('meta[property="og:title"]')?.content;
+      if (ogTitle) {
+        subject = this.cleanTitle(ogTitle);
+        extractionMethod = 'og_title';
+      }
+    }
+    
+    // 3. Try H1 near price/CTA
+    if (!subject) {
+      const h1 = this.findH1NearCommerce();
+      if (h1) {
+        subject = h1;
+        extractionMethod = 'h1_near_commerce';
+      }
+    }
+    
+    // 4. Try breadcrumb last node
+    if (!subject) {
+      const breadcrumb = this.extractFromBreadcrumb();
+      if (breadcrumb) {
+        subject = breadcrumb;
+        extractionMethod = 'breadcrumb';
+      }
+    }
+    
+    // 5. Try URL slug
+    if (!subject) {
+      subject = this.extractFromUrlSlug();
+      extractionMethod = 'url_slug';
+    }
+    
+    // 6. Fall back to page title
+    if (!subject) {
+      subject = this.cleanTitle(document.title);
+      extractionMethod = 'page_title';
+    }
+    
+    return {
+      subject: this.normalizeSubject(subject),
+      confidence: extractionMethod.includes('json_ld') || extractionMethod.includes('adapter') ? 'high' : 'low',
+      needsConfirm: false,
+      extractionMethod
+    };
+  }
+  
+  /**
+   * Extract health subject
+   */
+  extractHealthSubject() {
+    let subject = '';
+    let extractionMethod = '';
+    
+    // 1. Try JSON-LD Article.headline
+    const jsonLd = this.extractFromJsonLd('Article');
+    if (jsonLd && jsonLd.headline) {
+      subject = jsonLd.headline;
+      extractionMethod = 'json_ld_headline';
+    }
+    
+    // 2. Try H1 inside article
+    if (!subject) {
+      const articleH1 = document.querySelector('article h1, main h1, .article-content h1');
+      if (articleH1) {
+        subject = articleH1.textContent.trim();
+        extractionMethod = 'article_h1';
+      }
+    }
+    
+    // 3. Try Open Graph title
+    if (!subject) {
+      const ogTitle = document.querySelector('meta[property="og:title"]')?.content;
+      if (ogTitle) {
+        subject = this.cleanTitle(ogTitle);
+        extractionMethod = 'og_title';
+      }
+    }
+    
+    // 4. Try extracting medical noun phrase from intro
+    if (!subject) {
+      subject = this.extractMedicalPhrase();
+      if (subject) {
+        extractionMethod = 'medical_phrase';
+      }
+    }
+    
+    // 5. Fall back to page title
+    if (!subject) {
+      subject = this.cleanTitle(document.title);
+      extractionMethod = 'page_title';
+    }
+    
+    return {
+      subject: this.normalizeSubject(subject),
+      confidence: extractionMethod.includes('json_ld') || extractionMethod === 'article_h1' ? 'high' : 'low',
+      needsConfirm: false,
+      extractionMethod
+    };
+  }
+  
+  /**
+   * Check if subject meets specificity requirements
+   */
+  checkSpecificity(subject, chipType) {
+    if (!subject) {
+      return { pass: false, reason: 'empty_subject' };
+    }
+    
+    const words = subject.split(/\s+/).filter(w => w.length > 0);
+    const lowerSubject = subject.toLowerCase();
+    
+    // Rule 1: At least 2 words
+    if (words.length < 2) {
+      return { pass: false, reason: 'too_short' };
+    }
+    
+    // Rule 2: Not in generic terms list
+    const hasGenericTerm = this.genericTerms.some(term => {
+      const regex = new RegExp(`\\b${term}\\b`, 'i');
+      return regex.test(lowerSubject);
+    });
+    
+    if (hasGenericTerm) {
+      return { pass: false, reason: 'contains_generic_term' };
+    }
+    
+    // Rule 3: Brand-only guard for products
+    if (chipType === 'product') {
+      const cleanedSubject = words.map(w => w.toLowerCase()).join(' ');
+      const isBrandOnly = this.brandOnlyTerms.some(brand => {
+        return cleanedSubject === brand || 
+               cleanedSubject === brand + 's' ||
+               cleanedSubject === 'the ' + brand;
+      });
+      
+      if (isBrandOnly) {
+        return { pass: false, reason: 'brand_only' };
+      }
+    }
+    
+    // Rule 4: Contains either a model pattern OR two 4+ char words
+    const hasModel = words.some(word => 
+      this.modelPatterns.some(pattern => pattern.test(word))
+    );
+    
+    const longWords = words.filter(w => w.length >= 4);
+    const hasTwoLongWords = longWords.length >= 2;
+    
+    if (!hasModel && !hasTwoLongWords) {
+      return { pass: false, reason: 'not_specific_enough' };
+    }
+    
+    // Rule 5: Not longer than 8 words (truncate if needed)
+    if (words.length > 8) {
+      subject = words.slice(0, 8).join(' ');
+    }
+    
+    return { pass: true, subject };
+  }
+  
+  /**
+   * Helper: Extract from JSON-LD
+   */
+  extractFromJsonLd(type) {
+    const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+    for (const script of scripts) {
+      try {
+        const data = JSON.parse(script.textContent);
+        if (data['@type'] === type) {
+          return data;
+        }
+        if (data['@graph']) {
+          const item = data['@graph'].find(i => i['@type'] === type);
+          if (item) return item;
+        }
+      } catch (e) {}
+    }
+    return null;
+  }
+  
+  /**
+   * Helper: Find H1 near commerce elements
+   */
+  findH1NearCommerce() {
+    const priceElements = document.querySelectorAll('[class*="price"], [data-price]');
+    
+    for (const priceEl of priceElements) {
+      // Look for H1 within 3 parent levels
+      let parent = priceEl;
+      for (let i = 0; i < 3; i++) {
+        parent = parent.parentElement;
+        if (!parent) break;
+        
+        const h1 = parent.querySelector('h1');
+        if (h1) {
+          return h1.textContent.trim();
+        }
+      }
+    }
+    
+    return null;
+  }
+  
+  /**
+   * Helper: Extract from breadcrumb
+   */
+  extractFromBreadcrumb() {
+    const breadcrumbs = document.querySelectorAll(
+      'nav[aria-label*="breadcrumb"] li:last-child, ' +
+      '.breadcrumb li:last-child, ' +
+      '[class*="breadcrumb"] > *:last-child'
+    );
+    
+    for (const crumb of breadcrumbs) {
+      const text = crumb.textContent.trim();
+      // Skip if it's a generic term
+      if (!this.genericTerms.includes(text.toLowerCase())) {
+        return text;
+      }
+    }
+    
+    return null;
+  }
+  
+  /**
+   * Helper: Extract from URL slug
+   */
+  extractFromUrlSlug() {
+    const pathname = window.location.pathname;
+    const segments = pathname.split('/').filter(s => s.length > 0);
+    
+    if (segments.length > 0) {
+      const lastSegment = segments[segments.length - 1];
+      // Clean up common patterns
+      const cleaned = lastSegment
+        .replace(/[-_]/g, ' ')
+        .replace(/\.(html?|php|aspx?)$/i, '')
+        .replace(/^[A-Z0-9]{10,}$/i, ''); // Skip pure IDs
+      
+      if (cleaned && !this.genericTerms.includes(cleaned.toLowerCase())) {
+        return cleaned;
+      }
+    }
+    
+    return null;
+  }
+  
+  /**
+   * Helper: Extract medical phrase from content
+   */
+  extractMedicalPhrase() {
+    const intro = document.querySelector(
+      'article > p:first-of-type, ' +
+      '.article-content > p:first-of-type, ' +
+      'main > p:first-of-type'
+    );
+    
+    if (!intro) return null;
+    
+    const text = intro.textContent.substring(0, 200);
+    
+    // Look for condition + therapy patterns
+    const medicalPattern = /(vitamin [A-Z]\d?|intermittent fasting|keto diet|meditation|acupuncture|supplements?|medication)/i;
+    const match = text.match(medicalPattern);
+    
+    if (match) {
+      // Try to get surrounding context
+      const startIdx = Math.max(0, match.index - 20);
+      const endIdx = Math.min(text.length, match.index + match[0].length + 20);
+      const context = text.substring(startIdx, endIdx).trim();
+      
+      // Clean it up
+      return context.replace(/^[^a-zA-Z]+|[^a-zA-Z]+$/g, '');
+    }
+    
+    return null;
+  }
+  
+  /**
+   * Helper: Clean title strings
+   */
+  cleanTitle(title) {
+    if (!title) return '';
+    
+    // Remove common suffixes
+    const suffixes = [
+      / \| .+$/,           // | SiteName
+      / - .+$/,            // - SiteName
+      / – .+$/,            // – SiteName
+      / • .+$/,            // • SiteName
+      / :: .+$/,           // :: SiteName
+      / \(\d{4}\)$/,       // (2024)
+      / - Review$/i,       // - Review
+      / - Buy Online$/i    // - Buy Online
+    ];
+    
+    let cleaned = title;
+    for (const suffix of suffixes) {
+      cleaned = cleaned.replace(suffix, '');
+    }
+    
+    return cleaned.trim();
+  }
+  
+  /**
+   * Helper: Normalize subject text
+   */
+  normalizeSubject(subject) {
+    if (!subject) return '';
+    
+    // Cap to 8 words
+    const words = subject.split(/\s+/);
+    if (words.length > 8) {
+      subject = words.slice(0, 8).join(' ');
+    }
+    
+    // Clean up whitespace
+    subject = subject.replace(/\s+/g, ' ').trim();
+    
+    // Preserve original case for display
+    return subject;
+  }
+  
+  /**
+   * Initialize site-specific adapters
+   */
+  initializeSiteAdapters() {
+    return {
+      // Amazon adapter
+      'amazon_com': {
+        productName: () => {
+          // Check for selected variant
+          const baseTitle = document.querySelector('#productTitle')?.textContent.trim();
+          const selectedSize = document.querySelector('#native_dropdown_selected_size_name')?.textContent.trim();
+          const selectedColor = document.querySelector('.selection')?.textContent.trim();
+          
+          const parts = [baseTitle];
+          if (selectedColor && !baseTitle?.includes(selectedColor)) {
+            parts.push(selectedColor);
+          }
+          if (selectedSize && !baseTitle?.includes(selectedSize)) {
+            parts.push(selectedSize);
+          }
+          
+          return parts.filter(Boolean).join(' ');
+        }
+      },
+      
+      // Target adapter
+      'target_com': {
+        productName: () => {
+          const baseTitle = document.querySelector('h1[data-test="product-title"]')?.textContent.trim();
+          
+          // Check for selected variants
+          const variantButtons = document.querySelectorAll('[data-test="variant-selector"] button[aria-checked="true"]');
+          const variants = Array.from(variantButtons).map(el => el.textContent.trim());
+          
+          if (variants.length > 0 && baseTitle) {
+            return `${baseTitle} ${variants.join(' ')}`;
+          }
+          
+          return baseTitle;
+        }
+      },
+      
+      // Walmart adapter
+      'walmart_com': {
+        productName: () => {
+          const title = document.querySelector('h1[itemprop="name"]')?.textContent.trim();
+          const variant = document.querySelector('.variant-selector .selected')?.textContent.trim();
+          
+          if (variant && title && !title.includes(variant)) {
+            return `${title} ${variant}`;
+          }
+          
+          return title;
+        }
+      },
+      
+      // Best Buy adapter
+      'bestbuy_com': {
+        productName: () => {
+          return document.querySelector('.sku-title h1')?.textContent.trim();
+        }
+      },
+      
+      // Healthline adapter
+      'healthline_com': {
+        healthTopic: () => {
+          const h1 = document.querySelector('h1')?.textContent;
+          return h1?.replace(/\s*[-–]\s*Healthline$/i, '').trim();
+        }
+      },
+      
+      // Mayo Clinic adapter
+      'mayoclinic_org': {
+        healthTopic: () => {
+          const h1 = document.querySelector('h1.content-title, h1')?.textContent;
+          return h1?.replace(/\s*[-–]\s*Mayo Clinic$/i, '').trim();
+        }
+      },
+      
+      // WebMD adapter
+      'webmd_com': {
+        healthTopic: () => {
+          return document.querySelector('h1.article-title, h1')?.textContent.trim();
+        }
+      },
+      
+      // MedlinePlus adapter
+      'medlineplus_gov': {
+        healthTopic: () => {
+          return document.querySelector('h1.with-also, h1')?.textContent.trim();
+        }
+      },
+      
+      // CNN Health adapter
+      'cnn_com': {
+        pageType: () => {
+          const path = window.location.pathname;
+          if (path === '/health' || path === '/health/') return 'portal';
+          if (document.querySelector('article')) return 'article';
+          return 'portal';
+        },
+        healthTopic: () => {
+          const h1 = document.querySelector('h1.article__title, h1[data-test="headline"], h1');
+          return h1?.textContent.trim();
+        }
+      }
+    };
+  }
+}
+
+// Export for use in chipManager
+/* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (SubjectExtractor);
+
+/***/ }),
+
 /***/ 611:
 /***/ ((module, __unused_webpack___webpack_exports__, __webpack_require__) => {
 
-/* harmony import */ var _scanners_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(63);
+"use strict";
+/* harmony import */ var _services_chipManager_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(354);
+/* harmony import */ var _scanners_js__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(63);
 /* module decorator */ module = __webpack_require__.hmd(module);
 // SafeSignal Content Script - Fixed Visibility Edition + Scanner Wiring
 // Version: 4.1-visibility-fix + scanners
@@ -985,6 +3067,16 @@ const SAFESIGNAL_BUILD = 'content-2025-10-03-v4.1-scanner-wired';
 const API_BASE_URL = 'http://localhost:8000';
 
 console.info('[SafeSignal] Build:', SAFESIGNAL_BUILD);
+// services
+// CORRECT - go up one level, then into services
+
+
+
+
+
+
+// components
+
 
 // ← ADDED: Import scanner modules
 
@@ -1028,6 +3120,7 @@ class SafeSignalBadge {
             sizeMode: 'large',
             miniChipsEnabled: true
         };
+        this.chipManager = chipManager;
         
         this.init();
     }
@@ -1037,7 +3130,12 @@ class SafeSignalBadge {
         
         await this.loadUserPreferences();
         this.createBadge();
-        
+        window.chipManager = chipManager;
+        chipManager.chipElements = {
+            product: () => this.root.querySelector('.chip-product'),
+            health: () => this.root.querySelector('.chip-health'),
+            wrapper: () => this.chipsWrapper
+        };
         // ← ADDED: Initialize scanners after badge creation (needs this.root)
         this.initScanners();
         
@@ -1071,10 +3169,15 @@ class SafeSignalBadge {
     // ← ADDED: Scanner initialization
     initScanners() {
         try {
-            this.apiClient = new _scanners_js__WEBPACK_IMPORTED_MODULE_0__/* .APIClient */ .Q9(API_BASE_URL);
-            this.scanner = new _scanners_js__WEBPACK_IMPORTED_MODULE_0__/* .PageScanner */ .Y7(this.apiClient);
-            this.scannerUI = new _scanners_js__WEBPACK_IMPORTED_MODULE_0__/* .ScannerUI */ .vk(this.scanner, this.root);
+            this.apiClient = new _scanners_js__WEBPACK_IMPORTED_MODULE_1__/* .APIClient */ .Q9(API_BASE_URL);
+            this.scanner = new _scanners_js__WEBPACK_IMPORTED_MODULE_1__/* .PageScanner */ .Y7(this.apiClient);
+            this.scannerUI = new _scanners_js__WEBPACK_IMPORTED_MODULE_1__/* .ScannerUI */ .vk(this.scanner, this.root);
             console.log('[SafeSignal] ✅ Scanners initialized');
+            this.chipManager.chipElements = {
+                product: this.root.querySelector('.chip-product'),
+                health: this.root.querySelector('.chip-health'),
+                wrapper: this.chipsWrapper
+            };
         } catch (error) {
             console.error('[SafeSignal] Scanner initialization failed:', error);
         }
@@ -1667,60 +3770,49 @@ class SafeSignalBadge {
     // ==================== MINI CHIPS MANAGEMENT ====================
     
     updateMiniChips() {
-        // Run context detection
-        this.contextData = this.contextProbe.detectContext();
-        
-        // Clear existing chips
-        this.chipsWrapper.innerHTML = '';
-        
-        // Add product chip if relevant
-        if (this.contextData.product.confidence > 0.3) {
-            const productChip = document.createElement('div');
-            productChip.className = 'mini-chip chip-product';
-            productChip.innerHTML = '🛒 Find Safer Deals';
-            productChip.addEventListener('click', () => this.handleProductScan());
-            this.chipsWrapper.appendChild(productChip);
-        }
-        
-        // Add health chip if relevant
-        if (this.contextData.health.confidence > 0.3) {
-            const healthChip = document.createElement('div');
-            healthChip.className = 'mini-chip chip-health';
-            healthChip.innerHTML = '🏥 Check Health Claims';
-            healthChip.addEventListener('click', () => this.handleHealthScan());
-            this.chipsWrapper.appendChild(healthChip);
-        }
-        
-        // Show chips if we have any
-        if (this.chipsWrapper.children.length > 0) {
-            this.chipsWrapper.classList.add('visible');
-        } else {
-            this.chipsWrapper.classList.remove('visible');
-        }
+        // Let the chip manager handle all gate logic
+        this.chipManager.evaluateChips();
     }
     
-    // ← ADDED: Scanner handlers
+        // ← ADDED: Scanner handlers
     async handleProductScan() {
         if (!this.scannerUI) {
             console.error('[SafeSignal] Scanner UI not initialized');
             return;
         }
-        console.log('[SafeSignal] 🛒 Starting product scan...');
+        
+        // Get the extracted subject from chip manager
+        const extraction = await chipManager.subjectExtractor.extractSubject('product');
+        if (!extraction.subject) {
+            console.log('[SafeSignal] No product subject extracted');
+            return;
+        }
+        
+        console.log('[SafeSignal] 🛒 Starting product scan for:', extraction.subject);
         try {
-            await this.scannerUI.handleProductScan();
+            await this.scannerUI.handleProductScan(extraction.subject);
         } catch (error) {
             console.error('[SafeSignal] Product scan error:', error);
         }
     }
-    
+
+    // Similarly for handleHealthScan():
     async handleHealthScan() {
         if (!this.scannerUI) {
             console.error('[SafeSignal] Scanner UI not initialized');
             return;
         }
-        console.log('[SafeSignal] 🏥 Starting health scan...');
+        
+        // Get the extracted subject from chip manager
+        const extraction = await chipManager.subjectExtractor.extractSubject('health');
+        if (!extraction.subject) {
+            console.log('[SafeSignal] No health subject extracted');
+            return;
+        }
+        
+        console.log('[SafeSignal] 🏥 Starting health scan for:', extraction.subject);
         try {
-            await this.scannerUI.handleHealthScan();
+            await this.scannerUI.handleHealthScan(extraction.subject);
         } catch (error) {
             console.error('[SafeSignal] Health scan error:', error);
         }
@@ -2180,6 +4272,429 @@ if ( true && module.exports) {
     module.exports = { SafeSignalBadge, SafeSignalContextProbe };
 }
 
+/***/ }),
+
+/***/ 737:
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   A: () => (__WEBPACK_DEFAULT_EXPORT__)
+/* harmony export */ });
+// extension/src/services/pageClassifier.js
+// Gate 0: Page Type Classification - Blocks chips on SERPs, portals, feeds
+// NEVER affects badge - badge always shows on all pages
+
+class PageClassifier {
+  constructor() {
+    // Known domains categorized by type
+    this.knownDomains = {
+      serp: [
+        'google.com/search', 'bing.com/search', 'duckduckgo.com',
+        'search.yahoo.com', 'ask.com', 'baidu.com', 'yandex.com',
+        'reddit.com/search', 'twitter.com/search', 'facebook.com/search'
+      ],
+      portal: [
+        'google.com', 'bing.com', 'yahoo.com', 'msn.com',
+        'news.google.com', 'apple.news', 'flipboard.com', 'feedly.com',
+        'reddit.com/r/all', 'reddit.com/r/popular', 'reddit.com',
+        'twitter.com', 'facebook.com', 'instagram.com', 'linkedin.com/feed',
+        'tiktok.com', 'pinterest.com', 'tumblr.com',
+        'cnn.com', 'bbc.com', 'foxnews.com', 'nytimes.com',
+        'target.com', 'walmart.com', 'amazon.com', 'ebay.com',
+        'bestbuy.com', 'homedepot.com', 'costco.com'
+      ],
+      health: [
+        'healthline.com', 'webmd.com', 'mayoclinic.org', 'medlineplus.gov',
+        'cdc.gov', 'nih.gov', 'who.int', 'clevelandclinic.org'
+      ]
+    };
+    
+    // URL patterns for detection
+    this.urlPatterns = {
+      serp: [
+        /\/search\b/i, /\/results\b/i, /[?&]q=/i, /[?&]query=/i,
+        /\/find\b/i, /[?&]s=/i, /\/s\?/i
+      ],
+      portal: [
+        /^\/$/,  // Root path
+        /^\/news\/?$/i, /^\/trending\/?$/i, /^\/popular\/?$/i,
+        /^\/feed\/?$/i, /^\/explore\/?$/i, /^\/discover\/?$/i,
+        /^\/all\/?$/i, /^\/home\/?$/i
+      ],
+      category: [
+        /\/c\/[^/]+$/i,  // Target category pages
+        /\/category\/[^/]+$/i, /\/categories\//i,
+        /\/shop\/[^/]+$/i, /\/department\/[^/]+$/i,
+        /\/browse\/[^/]+$/i, /\/collection\/[^/]+$/i
+      ],
+      product: [
+        /\/dp\/[A-Z0-9]+/i,  // Amazon
+        /\/p\/[^/]+/i,  // Target
+        /\/pd\/[^/]+/i, /\/product\/[^/]+/i,
+        /\/item\/[^/]+/i, /\/ip\/[^/]+/i,  // Walmart
+        /\/itm\/\d+/i  // eBay
+      ],
+      article: [
+        /\/article\//i, /\/story\//i, /\/post\//i,
+        /\/\d{4}\/\d{2}\//,  // Date-based URLs
+        /\/health\/[^/]+\/[^/]+/i,  // Health articles
+        /\/nutrition\/[^/]+/i, /\/conditions\/[^/]+/i
+      ]
+    };
+  }
+  
+  /**
+   * Main classification method
+   * @returns {string} 'serp' | 'portal' | 'product' | 'health' | 'article' | 'ambiguous'
+   */
+  classify(url = window.location.href) {
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname.replace('www.', '');
+    const pathname = urlObj.pathname;
+    const fullPath = hostname + pathname;
+    
+    console.log('[PageClassifier] Analyzing:', fullPath);
+    
+    // 1. Check for SERP indicators
+    if (this.isSERP(urlObj, hostname, pathname)) {
+      return 'serp';
+    }
+    
+    // 2. Check for portal/feed pages
+    if (this.isPortal(urlObj, hostname, pathname)) {
+      return 'portal';
+    }
+    
+    // 3. Check for category/listing pages
+    if (this.isCategoryPage(urlObj, hostname, pathname)) {
+      return 'portal';  // Treat category pages as portals (no chips)
+    }
+    
+    // 4. Check for product pages
+    if (this.isProductPage(urlObj, hostname, pathname)) {
+      return 'product';
+    }
+    
+    // 5. Check for health/article pages
+    if (this.isHealthArticle(urlObj, hostname, pathname)) {
+      return 'article';
+    }
+    
+    // 6. Check for general articles
+    if (this.isArticle(urlObj, hostname, pathname)) {
+      return 'article';
+    }
+    
+    // Default to ambiguous (chips blocked)
+    return 'ambiguous';
+  }
+  
+  /**
+   * SERP Detection
+   */
+  isSERP(urlObj, hostname, pathname) {
+    // Check known SERP domains
+    if (this.knownDomains.serp.some(domain => 
+      (hostname + pathname).startsWith(domain)
+    )) {
+      console.log('[PageClassifier] Matched known SERP domain');
+      return true;
+    }
+    
+    // Check URL patterns
+    if (this.urlPatterns.serp.some(pattern => pattern.test(urlObj.href))) {
+      console.log('[PageClassifier] Matched SERP URL pattern');
+      return true;
+    }
+    
+    // Check query parameters
+    const hasSearchQuery = urlObj.searchParams.has('q') || 
+                          urlObj.searchParams.has('query') ||
+                          urlObj.searchParams.has('search_query') ||
+                          urlObj.searchParams.has('s');
+    if (hasSearchQuery && pathname.includes('search')) {
+      console.log('[PageClassifier] Detected search query params');
+      return true;
+    }
+    
+    // DOM-based SERP detection
+    const serpSelectors = [
+      '#rso .g',  // Google results
+      '[data-hveid]',  // Google result items
+      '.b_algo',  // Bing results
+      '.search-result-item',
+      '#search-results',
+      '.results-list'
+    ];
+    
+    for (const selector of serpSelectors) {
+      try {
+        const elements = document.querySelectorAll(selector);
+        if (elements.length >= 3) {  // Multiple results indicate SERP
+          console.log('[PageClassifier] Found SERP DOM elements:', selector);
+          return true;
+        }
+      } catch (e) {
+        // Selector might be invalid, continue
+      }
+    }
+    
+    // Check for search input + results pattern
+    const hasSearchInput = document.querySelector('input[type="search"], input[name="q"], input[name="query"]');
+    const hasMultipleLinks = document.querySelectorAll('a[href*="http"]').length > 20;
+    if (hasSearchInput && hasMultipleLinks) {
+      console.log('[PageClassifier] Detected search input + many links');
+      return true;
+    }
+    
+    return false;
+  }
+  
+  /**
+   * Portal/Feed Detection
+   */
+  isPortal(urlObj, hostname, pathname) {
+    // Check known portal domains
+    for (const domain of this.knownDomains.portal) {
+      if (hostname === domain || hostname.endsWith('.' + domain)) {
+        // Check if we're on homepage or section page
+        if (pathname === '/' || pathname === '' || 
+            this.urlPatterns.portal.some(p => p.test(pathname))) {
+          console.log('[PageClassifier] Matched portal domain:', domain);
+          return true;
+        }
+      }
+    }
+    
+    // Special case: news site homepages and section pages
+    const newsSites = ['cnn.com', 'bbc.com', 'nytimes.com', 'foxnews.com'];
+    if (newsSites.some(site => hostname.includes(site))) {
+      // Section pages like /health, /tech, /business
+      if (pathname.match(/^\/[a-z]+\/?$/i) && !pathname.includes('article')) {
+        console.log('[PageClassifier] News section page detected');
+        return true;
+      }
+    }
+    
+    // Special case: e-commerce homepages
+    const ecommerceSites = ['amazon.com', 'target.com', 'walmart.com', 'ebay.com'];
+    if (ecommerceSites.some(site => hostname.includes(site))) {
+      if (pathname === '/' || pathname === '') {
+        console.log('[PageClassifier] E-commerce homepage detected');
+        return true;
+      }
+    }
+    
+    // Social media feeds
+    const socialPatterns = [
+      /twitter\.com\/?$/,
+      /facebook\.com\/?$/,
+      /instagram\.com\/?$/,
+      /linkedin\.com\/feed/,
+      /reddit\.com\/r\/\w+\/?$/
+    ];
+    if (socialPatterns.some(pattern => pattern.test(hostname + pathname))) {
+      console.log('[PageClassifier] Social media feed detected');
+      return true;
+    }
+    
+    // DOM-based portal detection
+    const feedIndicators = [
+      '.feed', '.timeline', '.stream',
+      '[data-testid="primaryColumn"]',  // Twitter feed
+      '[role="feed"]', '.news-feed'
+    ];
+    
+    let feedElementCount = 0;
+    for (const selector of feedIndicators) {
+      try {
+        if (document.querySelector(selector)) {
+          feedElementCount++;
+        }
+      } catch (e) {}
+    }
+    
+    if (feedElementCount >= 2) {
+      console.log('[PageClassifier] Multiple feed elements found');
+      return true;
+    }
+    
+    return false;
+  }
+  
+  /**
+   * Category/Listing Page Detection
+   */
+  isCategoryPage(urlObj, hostname, pathname) {
+    // URL pattern matching
+    if (this.urlPatterns.category.some(pattern => pattern.test(pathname))) {
+      console.log('[PageClassifier] Category URL pattern matched');
+      return true;
+    }
+    
+    // Look for product grids (multiple product cards)
+    const productCards = document.querySelectorAll(
+      '[class*="product-card"], [class*="productCard"], ' +
+      '[class*="product-item"], [class*="item-card"], ' +
+      '[data-testid*="product"], [data-product-id]'
+    );
+    
+    if (productCards.length >= 6) {  // Multiple products = category page
+      console.log('[PageClassifier] Product grid detected:', productCards.length, 'items');
+      return true;
+    }
+    
+    // Check for pagination (indicates listing)
+    const paginationExists = document.querySelector(
+      '.pagination, [class*="pagination"], ' +
+      'nav[aria-label*="pagination"], .page-numbers'
+    );
+    
+    if (paginationExists && productCards.length > 0) {
+      console.log('[PageClassifier] Category page with pagination detected');
+      return true;
+    }
+    
+    return false;
+  }
+  
+  /**
+   * Product Page Detection
+   */
+  isProductPage(urlObj, hostname, pathname) {
+    // URL pattern matching
+    if (this.urlPatterns.product.some(pattern => pattern.test(pathname))) {
+      console.log('[PageClassifier] Product URL pattern matched');
+      
+      // Additional validation: not a category page
+      if (!this.isCategoryPage(urlObj, hostname, pathname)) {
+        return true;
+      }
+    }
+    
+    // Check for JSON-LD Product schema
+    const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+    for (const script of jsonLdScripts) {
+      try {
+        const data = JSON.parse(script.textContent);
+        if (data['@type'] === 'Product' || 
+            (Array.isArray(data['@graph']) && 
+             data['@graph'].some(item => item['@type'] === 'Product'))) {
+          console.log('[PageClassifier] Product schema found');
+          return true;
+        }
+      } catch (e) {}
+    }
+    
+    // DOM-based product detection
+    const priceElement = document.querySelector(
+      '[class*="price"], [itemprop="price"], ' +
+      '[data-price], .product-price'
+    );
+    const addToCartBtn = document.querySelector(
+      'button[class*="add-to-cart"], button[class*="addToCart"], ' +
+      'button[id*="add-to-cart"], [data-testid*="add-to-cart"]'
+    );
+    
+    if (priceElement && addToCartBtn) {
+      // Check they're near each other (within 3 parent levels)
+      let element = priceElement;
+      let levelsUp = 0;
+      while (element && levelsUp < 3) {
+        element = element.parentElement;
+        if (element && element.contains(addToCartBtn)) {
+          console.log('[PageClassifier] Price + Add to Cart found together');
+          return true;
+        }
+        levelsUp++;
+      }
+    }
+    
+    // Check for product title + price + buy button pattern
+    const hasProductTitle = document.querySelector('h1[class*="product"], h1[itemprop="name"]');
+    const hasBuyButton = addToCartBtn || document.querySelector('button[class*="buy"]');
+    if (hasProductTitle && priceElement && hasBuyButton) {
+      console.log('[PageClassifier] Product page elements detected');
+      return true;
+    }
+    
+    return false;
+  }
+  
+  /**
+   * Health Article Detection
+   */
+  isHealthArticle(urlObj, hostname, pathname) {
+    // Known health sites
+    if (this.knownDomains.health.some(domain => hostname.includes(domain))) {
+      // Check if it's an article (not homepage or section)
+      if (pathname.length > 10 && !this.isPortal(urlObj, hostname, pathname)) {
+        console.log('[PageClassifier] Health site article detected');
+        return true;
+      }
+    }
+    
+    // Health-related URL patterns
+    const healthPatterns = [
+      /\/health\//i, /\/conditions\//i, /\/diseases\//i,
+      /\/treatment\//i, /\/symptoms\//i, /\/medical\//i,
+      /\/nutrition\//i, /\/wellness\//i, /\/fitness\//i
+    ];
+    
+    if (healthPatterns.some(pattern => pattern.test(pathname)) && 
+        this.isArticle(urlObj, hostname, pathname)) {
+      console.log('[PageClassifier] Health article URL pattern matched');
+      return true;
+    }
+    
+    return false;
+  }
+  
+  /**
+   * General Article Detection
+   */
+  isArticle(urlObj, hostname, pathname) {
+    // Check for article schema
+    const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+    for (const script of jsonLdScripts) {
+      try {
+        const data = JSON.parse(script.textContent);
+        if (['Article', 'NewsArticle', 'BlogPosting', 'MedicalWebPage'].includes(data['@type'])) {
+          console.log('[PageClassifier] Article schema found');
+          return true;
+        }
+      } catch (e) {}
+    }
+    
+    // Check for article elements
+    const articleElement = document.querySelector('article, [role="article"]');
+    const hasHeadline = document.querySelector('h1');
+    const hasAuthor = document.querySelector('[class*="author"], [rel="author"], .byline');
+    const hasDate = document.querySelector('time, [class*="publish"], [class*="date"]');
+    
+    if (articleElement && hasHeadline && (hasAuthor || hasDate)) {
+      console.log('[PageClassifier] Article structure detected');
+      return true;
+    }
+    
+    // URL patterns for articles
+    if (this.urlPatterns.article.some(pattern => pattern.test(pathname))) {
+      // Additional check: has substantial content
+      const mainContent = document.querySelector('main, article, .content');
+      if (mainContent && mainContent.textContent.length > 500) {
+        console.log('[PageClassifier] Article URL pattern with content');
+        return true;
+      }
+    }
+    
+    return false;
+  }
+}
+
+// Export for use in chipManager
+/* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (PageClassifier);
+
 /***/ })
 
 /******/ 	});
@@ -2212,6 +4727,18 @@ if ( true && module.exports) {
 /******/ 	}
 /******/ 	
 /************************************************************************/
+/******/ 	/* webpack/runtime/compat get default export */
+/******/ 	(() => {
+/******/ 		// getDefaultExport function for compatibility with non-harmony modules
+/******/ 		__webpack_require__.n = (module) => {
+/******/ 			var getter = module && module.__esModule ?
+/******/ 				() => (module['default']) :
+/******/ 				() => (module);
+/******/ 			__webpack_require__.d(getter, { a: getter });
+/******/ 			return getter;
+/******/ 		};
+/******/ 	})();
+/******/ 	
 /******/ 	/* webpack/runtime/define property getters */
 /******/ 	(() => {
 /******/ 		// define getter functions for harmony exports
@@ -2249,7 +4776,14 @@ if ( true && module.exports) {
 /******/ 	// startup
 /******/ 	// Load entry module and return exports
 /******/ 	// This entry module is referenced by other modules so it can't be inlined
-/******/ 	var __webpack_exports__ = __webpack_require__(611);
+/******/ 	__webpack_require__(611);
+/******/ 	__webpack_require__(737);
+/******/ 	__webpack_require__(317);
+/******/ 	__webpack_require__(431);
+/******/ 	__webpack_require__(354);
+/******/ 	__webpack_require__(423);
+/******/ 	__webpack_require__(264);
+/******/ 	var __webpack_exports__ = __webpack_require__(295);
 /******/ 	
 /******/ })()
 ;

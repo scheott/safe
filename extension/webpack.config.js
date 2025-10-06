@@ -7,13 +7,13 @@ module.exports = {
   entry: {
     content: [
         './src/content/content.js',
-        './src/services/pageClassifier.js',
-        './src/services/intentScorer.js',
-        './src/services/subjectExtractor.js',
-        './src/services/chipManager.js',
-        './src/services/chipCache.js',
-        './src/services/chipCooldown.js',
-        './src/components/AssistModal.js'
+        './src/content/services/pageClassifier.js',        // ✅ Correct
+        './src/content/services/intentScorer.js',          // ✅ Correct
+        './src/content/services/subjectExtractor.js',      // ✅ Correct
+        './src/content/services/chipManager.js',           // ✅ Correct
+        './src/content/services/chipCache.js',             // ✅ Correct
+        './src/content/services/chipCooldown.js',          // ✅ Correct
+        './src/content/components/AssistModal.js'          // ✅ Correct
     ],
     popup: './src/popup/popup.js'
     // Note: background is NOT here - we copy it directly
