@@ -7,7 +7,7 @@ const API_BASE_URL = 'http://localhost:8000';
 console.info('[SafeSignal] Build:', SAFESIGNAL_BUILD);
 // services
 // CORRECT - go up one level, then into services
-import { ChipManager } from './services/chipManager.js';
+import ChipManager from './services/chipManager.js';  // ✅ Default import
 import { PageClassifier } from './services/pageClassifier.js';
 import { IntentScorer } from './services/intentScorer.js';
 import { SubjectExtractor } from './services/subjectExtractor.js';
@@ -58,7 +58,7 @@ class SafeSignalBadge {
             sizeMode: 'large',
             miniChipsEnabled: true
         };
-        this.chipManager = chipManager;
+        this.chipManager = new ChipManager();  // ✅ Create new instance
         
         this.init();
     }
@@ -68,7 +68,6 @@ class SafeSignalBadge {
         
         await this.loadUserPreferences();
         this.createBadge();
-        window.chipManager = chipManager;
         chipManager.chipElements = {
             product: () => this.root.querySelector('.chip-product'),
             health: () => this.root.querySelector('.chip-health'),
@@ -1186,7 +1185,12 @@ function initializeSafeSignal() {
         window.safeSignalInstance = null;
     }
     
-    // Create new instance
+    // Create chipManager singleton FIRST
+    if (!window.chipManager) {
+        window.chipManager = new ChipManager();
+    }
+    
+    // Create new badge instance
     window.safeSignalInstance = new SafeSignalBadge();
     console.log('[SafeSignal] Extension initialized with scanners');
 }

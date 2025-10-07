@@ -134,4 +134,5 @@ class ChipCache {
     }
   }
 }
+export default ChipCache;  // ← ADD THIS LINE
 

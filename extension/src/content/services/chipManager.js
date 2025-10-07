@@ -346,33 +346,4 @@ class ChipManager {
   }
 }
 
-// Export singleton instance
-const chipManager = new ChipManager();
-
-// Auto-initialize on DOM ready
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    chipManager.evaluateChips();
-  });
-} else {
-  // DOM already loaded
-  setTimeout(() => chipManager.evaluateChips(), 100);
-}
-
-// Listen for SPA navigation
-let lastUrl = window.location.href;
-const urlObserver = new MutationObserver(() => {
-  const currentUrl = window.location.href;
-  if (currentUrl !== lastUrl) {
-    lastUrl = currentUrl;
-    setTimeout(() => chipManager.evaluateChips(), 500);
-  }
-});
-
-urlObserver.observe(document.body, {
-  childList: true,
-  subtree: true
-});
-
-// Export for extension integration
-export default chipManager;
+export default ChipManager;

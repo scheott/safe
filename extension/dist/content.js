@@ -1,10 +1,10 @@
 /******/ (() => { // webpackBootstrap
+/******/ 	"use strict";
 /******/ 	var __webpack_modules__ = ({
 
 /***/ 63:
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
-"use strict";
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   Q9: () => (/* binding */ APIClient),
 /* harmony export */   Y7: () => (/* binding */ PageScanner),
@@ -976,7 +976,6 @@ class ScannerUI {
 /***/ 264:
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
-"use strict";
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   A: () => (__WEBPACK_DEFAULT_EXPORT__)
 /* harmony export */ });
@@ -1192,7 +1191,6 @@ class ChipCooldown {
 /***/ 295:
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
-"use strict";
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   A: () => (__WEBPACK_DEFAULT_EXPORT__)
 /* harmony export */ });
@@ -1506,7 +1504,6 @@ class AssistModal {
 /***/ 317:
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
-"use strict";
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   A: () => (__WEBPACK_DEFAULT_EXPORT__)
 /* harmony export */ });
@@ -1915,15 +1912,16 @@ class IntentScorer {
 /***/ }),
 
 /***/ 354:
-/***/ ((__unused_webpack_module, __unused_webpack___webpack_exports__, __webpack_require__) => {
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
-"use strict";
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   A: () => (__WEBPACK_DEFAULT_EXPORT__)
+/* harmony export */ });
 /* harmony import */ var _pageClassifier_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(737);
 /* harmony import */ var _intentScorer_js__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(317);
 /* harmony import */ var _subjectExtractor_js__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(431);
 /* harmony import */ var _components_AssistModal_js__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(295);
 /* harmony import */ var _chipCache_js__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(423);
-/* harmony import */ var _chipCache_js__WEBPACK_IMPORTED_MODULE_4___default = /*#__PURE__*/__webpack_require__.n(_chipCache_js__WEBPACK_IMPORTED_MODULE_4__);
 /* harmony import */ var _chipCooldown_js__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(264);
 // extension/src/services/chipManager.js
 // Orchestrates all 3 gates and controls chip visibility
@@ -1947,7 +1945,7 @@ class ChipManager {
     this.assistModal = new _components_AssistModal_js__WEBPACK_IMPORTED_MODULE_3__/* ["default"] */ .A();
     
     // Caching & cooldowns
-    this.cache = new (_chipCache_js__WEBPACK_IMPORTED_MODULE_4___default())();
+    this.cache = new _chipCache_js__WEBPACK_IMPORTED_MODULE_4__/* ["default"] */ .A();
     this.cooldown = new _chipCooldown_js__WEBPACK_IMPORTED_MODULE_5__/* ["default"] */ .A();
     
     // Analytics tracking
@@ -2273,42 +2271,16 @@ class ChipManager {
   }
 }
 
-// Export singleton instance
-const chipManager = new ChipManager();
-
-// Auto-initialize on DOM ready
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    chipManager.evaluateChips();
-  });
-} else {
-  // DOM already loaded
-  setTimeout(() => chipManager.evaluateChips(), 100);
-}
-
-// Listen for SPA navigation
-let lastUrl = window.location.href;
-const urlObserver = new MutationObserver(() => {
-  const currentUrl = window.location.href;
-  if (currentUrl !== lastUrl) {
-    lastUrl = currentUrl;
-    setTimeout(() => chipManager.evaluateChips(), 500);
-  }
-});
-
-urlObserver.observe(document.body, {
-  childList: true,
-  subtree: true
-});
-
-// Export for extension integration
-/* unused harmony default export */ var __WEBPACK_DEFAULT_EXPORT__ = ((/* unused pure expression or super */ null && (chipManager)));
+/* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (ChipManager);
 
 /***/ }),
 
 /***/ 423:
-/***/ (() => {
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   A: () => (__WEBPACK_DEFAULT_EXPORT__)
+/* harmony export */ });
 // extension/src/services/chipCache.js
 // Caching service for chip scan results
 
@@ -2445,6 +2417,7 @@ class ChipCache {
     }
   }
 }
+/* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (ChipCache);  // ← ADD THIS LINE
 
 
 
@@ -2453,7 +2426,6 @@ class ChipCache {
 /***/ 431:
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
-"use strict";
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   A: () => (__WEBPACK_DEFAULT_EXPORT__)
 /* harmony export */ });
@@ -3056,7 +3028,6 @@ class SubjectExtractor {
 /***/ 611:
 /***/ ((module, __unused_webpack___webpack_exports__, __webpack_require__) => {
 
-"use strict";
 /* harmony import */ var _services_chipManager_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(354);
 /* harmony import */ var _scanners_js__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(63);
 /* module decorator */ module = __webpack_require__.hmd(module);
@@ -3069,7 +3040,7 @@ const API_BASE_URL = 'http://localhost:8000';
 console.info('[SafeSignal] Build:', SAFESIGNAL_BUILD);
 // services
 // CORRECT - go up one level, then into services
-
+  // ✅ Default import
 
 
 
@@ -3120,7 +3091,7 @@ class SafeSignalBadge {
             sizeMode: 'large',
             miniChipsEnabled: true
         };
-        this.chipManager = chipManager;
+        this.chipManager = new _services_chipManager_js__WEBPACK_IMPORTED_MODULE_0__/* ["default"] */ .A();  // ✅ Create new instance
         
         this.init();
     }
@@ -3130,7 +3101,6 @@ class SafeSignalBadge {
         
         await this.loadUserPreferences();
         this.createBadge();
-        window.chipManager = chipManager;
         chipManager.chipElements = {
             product: () => this.root.querySelector('.chip-product'),
             health: () => this.root.querySelector('.chip-health'),
@@ -4248,7 +4218,12 @@ function initializeSafeSignal() {
         window.safeSignalInstance = null;
     }
     
-    // Create new instance
+    // Create chipManager singleton FIRST
+    if (!window.chipManager) {
+        window.chipManager = new _services_chipManager_js__WEBPACK_IMPORTED_MODULE_0__/* ["default"] */ .A();
+    }
+    
+    // Create new badge instance
     window.safeSignalInstance = new SafeSignalBadge();
     console.log('[SafeSignal] Extension initialized with scanners');
 }
@@ -4277,7 +4252,6 @@ if ( true && module.exports) {
 /***/ 737:
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
-"use strict";
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   A: () => (__WEBPACK_DEFAULT_EXPORT__)
 /* harmony export */ });
@@ -4727,18 +4701,6 @@ class PageClassifier {
 /******/ 	}
 /******/ 	
 /************************************************************************/
-/******/ 	/* webpack/runtime/compat get default export */
-/******/ 	(() => {
-/******/ 		// getDefaultExport function for compatibility with non-harmony modules
-/******/ 		__webpack_require__.n = (module) => {
-/******/ 			var getter = module && module.__esModule ?
-/******/ 				() => (module['default']) :
-/******/ 				() => (module);
-/******/ 			__webpack_require__.d(getter, { a: getter });
-/******/ 			return getter;
-/******/ 		};
-/******/ 	})();
-/******/ 	
 /******/ 	/* webpack/runtime/define property getters */
 /******/ 	(() => {
 /******/ 		// define getter functions for harmony exports
