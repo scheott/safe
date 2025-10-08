@@ -31,7 +31,7 @@ class PageClassifier {
     this.urlPatterns = {
       serp: [
         /\/search\b/i, /\/results\b/i, /[?&]q=/i, /[?&]query=/i,
-        /\/find\b/i, /[?&]s=/i, /\/s\?/i
+        /\/find\b/i, /[?&]s=/i, /^\/s\?/i
       ],
       portal: [
         /^\/$/,  // Root path
@@ -73,6 +73,11 @@ class PageClassifier {
     
     console.log('[PageClassifier] Analyzing:', fullPath);
     
+    // 4. Check for product pages
+    if (this.isProductPage(urlObj, hostname, pathname)) {
+      return 'product';
+    }
+    
     // 1. Check for SERP indicators
     if (this.isSERP(urlObj, hostname, pathname)) {
       return 'serp';
@@ -86,11 +91,6 @@ class PageClassifier {
     // 3. Check for category/listing pages
     if (this.isCategoryPage(urlObj, hostname, pathname)) {
       return 'portal';  // Treat category pages as portals (no chips)
-    }
-    
-    // 4. Check for product pages
-    if (this.isProductPage(urlObj, hostname, pathname)) {
-      return 'product';
     }
     
     // 5. Check for health/article pages
