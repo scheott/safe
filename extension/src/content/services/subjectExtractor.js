@@ -1,6 +1,5 @@
-// extension/src/services/subjectExtractor.js
-// Gate 2: Subject Extraction with Specificity Validation
-// Blocks generic subjects like "Apple", "Health", "New Deals"
+// extension/src/content/services/subjectExtractor.js
+// COMPLETE VERSION - All helper methods included
 
 class SubjectExtractor {
   constructor() {
@@ -63,7 +62,7 @@ class SubjectExtractor {
     }
     
     // Validate specificity
-    const specificityResult = this.checkSpecificity(extraction.subject, chipType);
+    const specificityResult = this.validateSubject(extraction.subject, chipType);
     
     if (!specificityResult.pass) {
       extraction.confidence = 'low';
@@ -80,6 +79,99 @@ class SubjectExtractor {
     console.log('[SubjectExtractor] Extraction result:', extraction);
     
     return extraction;
+  }
+  
+  /**
+   * FIXED: Check if subject meets specificity requirements
+   * Now checks in the right order to return correct failReason
+   */
+  validateSubject(subject, chipType) {
+    if (!subject) {
+      return { pass: false, reason: 'empty_subject' };
+    }
+    
+    const words = subject.split(/\s+/).filter(w => w.length > 0);
+    const lowerSubject = subject.toLowerCase();
+    
+    // Special case: Check brand-only FIRST for single-word product subjects
+    if (chipType === 'product' && words.length === 1) {
+      const cleanedSubject = words[0].toLowerCase();
+      const isBrandOnly = this.brandOnlyTerms.some(brand => {
+        return cleanedSubject === brand || 
+               cleanedSubject === brand + 's';
+      });
+      
+      if (isBrandOnly) {
+        return { pass: false, reason: 'brand_only' };
+      }
+    }
+    
+    // Special case: Check for generic term FIRST for single-word health subjects
+    if (chipType === 'health' && words.length === 1) {
+      const hasGenericTerm = this.genericTerms.some(term => {
+        const regex = new RegExp(`^${term}$`, 'i');
+        return regex.test(lowerSubject);
+      });
+      
+      if (hasGenericTerm) {
+        return { pass: false, reason: 'contains_generic_term' };
+      }
+    }
+    
+    // Rule 1: At least 2 words (after special cases)
+    if (words.length < 2) {
+      return { pass: false, reason: 'too_short' };
+    }
+    
+    // Rule 2: Not in generic terms list (for multi-word subjects)
+    const hasGenericTerm = this.genericTerms.some(term => {
+      const regex = new RegExp(`\\b${term}\\b`, 'i');
+      return regex.test(lowerSubject);
+    });
+    
+    if (hasGenericTerm) {
+      return { pass: false, reason: 'contains_generic_term' };
+    }
+    
+    // Rule 3: Brand-only guard for multi-word products
+    if (chipType === 'product') {
+      const cleanedSubject = words.map(w => w.toLowerCase()).join(' ');
+      const isBrandOnly = this.brandOnlyTerms.some(brand => {
+        return cleanedSubject === brand || 
+               cleanedSubject === brand + 's' ||
+               cleanedSubject === 'the ' + brand;
+      });
+      
+      if (isBrandOnly) {
+        return { pass: false, reason: 'brand_only' };
+      }
+    }
+    
+    // Rule 4: Contains either a model pattern OR two 4+ char words
+    const hasModel = words.some(word => 
+      this.modelPatterns.some(pattern => pattern.test(word))
+    );
+    
+    const longWords = words.filter(w => w.length >= 4);
+    const hasTwoLongWords = longWords.length >= 2;
+    
+    if (!hasModel && !hasTwoLongWords) {
+      return { pass: false, reason: 'not_specific_enough' };
+    }
+    
+    // Rule 5: Not longer than 8 words (truncate if needed)
+    if (words.length > 8) {
+      subject = words.slice(0, 8).join(' ');
+    }
+    
+    return { pass: true, subject };
+  }
+  
+  /**
+   * Legacy method name for compatibility - redirects to validateSubject
+   */
+  checkSpecificity(subject, chipType) {
+    return this.validateSubject(subject, chipType);
   }
   
   /**
@@ -256,103 +348,35 @@ class SubjectExtractor {
     };
   }
   
-  /**
-   * Check if subject meets specificity requirements
-   */
-  checkSpecificity(subject, chipType) {
-    if (!subject) {
-      return { pass: false, reason: 'empty_subject' };
-    }
-    
-    const words = subject.split(/\s+/).filter(w => w.length > 0);
-    const lowerSubject = subject.toLowerCase();
-    
-    // Rule 1: At least 2 words
-    if (words.length < 2) {
-      return { pass: false, reason: 'too_short' };
-    }
-    
-    // Rule 2: Not in generic terms list
-    const hasGenericTerm = this.genericTerms.some(term => {
-      const regex = new RegExp(`\\b${term}\\b`, 'i');
-      return regex.test(lowerSubject);
-    });
-    
-    if (hasGenericTerm) {
-      return { pass: false, reason: 'contains_generic_term' };
-    }
-    
-    // Rule 3: Brand-only guard for products
-    if (chipType === 'product') {
-      const cleanedSubject = words.map(w => w.toLowerCase()).join(' ');
-      const isBrandOnly = this.brandOnlyTerms.some(brand => {
-        return cleanedSubject === brand || 
-               cleanedSubject === brand + 's' ||
-               cleanedSubject === 'the ' + brand;
-      });
-      
-      if (isBrandOnly) {
-        return { pass: false, reason: 'brand_only' };
-      }
-    }
-    
-    // Rule 4: Contains either a model pattern OR two 4+ char words
-    const hasModel = words.some(word => 
-      this.modelPatterns.some(pattern => pattern.test(word))
-    );
-    
-    const longWords = words.filter(w => w.length >= 4);
-    const hasTwoLongWords = longWords.length >= 2;
-    
-    if (!hasModel && !hasTwoLongWords) {
-      return { pass: false, reason: 'not_specific_enough' };
-    }
-    
-    // Rule 5: Not longer than 8 words (truncate if needed)
-    if (words.length > 8) {
-      subject = words.slice(0, 8).join(' ');
-    }
-    
-    return { pass: true, subject };
-  }
+  // ========== HELPER METHODS ==========
   
   /**
-   * Helper: Extract from JSON-LD
+   * Helper: Extract from JSON-LD structured data
    */
   extractFromJsonLd(type) {
     const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+    
     for (const script of scripts) {
       try {
         const data = JSON.parse(script.textContent);
-        if (data['@type'] === type) {
-          return data;
-        }
-        if (data['@graph']) {
-          const item = data['@graph'].find(i => i['@type'] === type);
-          if (item) return item;
-        }
-      } catch (e) {}
-    }
-    return null;
-  }
-  
-  /**
-   * Helper: Find H1 near commerce elements
-   */
-  findH1NearCommerce() {
-    const priceElements = document.querySelectorAll('[class*="price"], [data-price]');
-    
-    for (const priceEl of priceElements) {
-      // Look for H1 within 3 parent levels
-      let parent = priceEl;
-      for (let i = 0; i < 3; i++) {
-        parent = parent.parentElement;
-        if (!parent) break;
         
-        const h1 = parent.querySelector('h1');
-        if (h1) {
-          return h1.textContent.trim();
+        // Handle both single objects and arrays
+        const items = Array.isArray(data) ? data : [data];
+        
+        for (const item of items) {
+          if (item['@type'] === type) {
+            return item;
+          }
+          
+          // Check nested @graph
+          if (item['@graph']) {
+            const found = item['@graph'].find(g => g['@type'] === type);
+            if (found) return found;
+          }
         }
+      } catch (e) {
+        // Skip invalid JSON
+        continue;
       }
     }
     
@@ -360,20 +384,57 @@ class SubjectExtractor {
   }
   
   /**
-   * Helper: Extract from breadcrumb
+   * Helper: Find H1 near commerce signals
+   */
+  findH1NearCommerce() {
+    const h1s = document.querySelectorAll('h1');
+    
+    for (const h1 of h1s) {
+      const text = h1.textContent.trim();
+      if (!text || text.length > 150) continue;
+      
+      // Check if near price/CTA within 300px
+      const rect = h1.getBoundingClientRect();
+      const nearbyElements = document.elementsFromPoint(
+        rect.left + rect.width / 2,
+        rect.top + rect.height + 200
+      );
+      
+      const hasCommerce = nearbyElements.some(el => {
+        const txt = el.textContent.toLowerCase();
+        return txt.includes('$') || 
+               txt.includes('add to cart') || 
+               txt.includes('buy now') ||
+               txt.includes('price');
+      });
+      
+      if (hasCommerce) {
+        return text;
+      }
+    }
+    
+    // Fall back to first H1 if nothing found
+    return h1s[0]?.textContent.trim() || null;
+  }
+  
+  /**
+   * Helper: Extract from breadcrumb navigation
    */
   extractFromBreadcrumb() {
-    const breadcrumbs = document.querySelectorAll(
-      'nav[aria-label*="breadcrumb"] li:last-child, ' +
-      '.breadcrumb li:last-child, ' +
-      '[class*="breadcrumb"] > *:last-child'
-    );
+    const breadcrumbSelectors = [
+      'nav[aria-label*="breadcrumb" i] li:last-child',
+      '.breadcrumb li:last-child',
+      '[itemtype*="BreadcrumbList"] [itemprop="name"]:last-of-type',
+      'ol.breadcrumb li:last-child a, ol.breadcrumb li:last-child span'
+    ];
     
-    for (const crumb of breadcrumbs) {
-      const text = crumb.textContent.trim();
-      // Skip if it's a generic term
-      if (!this.genericTerms.includes(text.toLowerCase())) {
-        return text;
+    for (const selector of breadcrumbSelectors) {
+      const el = document.querySelector(selector);
+      if (el) {
+        const text = el.textContent.trim();
+        if (text && text.length < 100) {
+          return text;
+        }
       }
     }
     
@@ -384,23 +445,33 @@ class SubjectExtractor {
    * Helper: Extract from URL slug
    */
   extractFromUrlSlug() {
-    const pathname = window.location.pathname;
-    const segments = pathname.split('/').filter(s => s.length > 0);
+    const path = window.location.pathname;
+    const segments = path.split('/').filter(s => s.length > 0);
     
-    if (segments.length > 0) {
-      const lastSegment = segments[segments.length - 1];
-      // Clean up common patterns
-      const cleaned = lastSegment
-        .replace(/[-_]/g, ' ')
-        .replace(/\.(html?|php|aspx?)$/i, '')
-        .replace(/^[A-Z0-9]{10,}$/i, ''); // Skip pure IDs
-      
-      if (cleaned && !this.genericTerms.includes(cleaned.toLowerCase())) {
-        return cleaned;
-      }
+    if (segments.length === 0) return null;
+    
+    // Get last meaningful segment
+    const lastSegment = segments[segments.length - 1];
+    
+    // Clean up common patterns
+    let cleaned = lastSegment
+      .replace(/\.html?$/i, '')
+      .replace(/\.(php|aspx?)$/i, '')
+      .replace(/[-_]/g, ' ')
+      .replace(/\b\d{5,}\b/g, '') // Remove long IDs
+      .trim();
+    
+    // Convert to title case
+    cleaned = cleaned.split(' ')
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(' ');
+    
+    // Skip if too generic or just an ID
+    if (cleaned.length < 3 || /^[A-Z0-9\s]+$/.test(cleaned)) {
+      return null;
     }
     
-    return null;
+    return cleaned;
   }
   
   /**
@@ -487,7 +558,6 @@ class SubjectExtractor {
       // Amazon adapter
       'amazon_com': {
         productName: () => {
-          // Check for selected variant
           const baseTitle = document.querySelector('#productTitle')?.textContent.trim();
           const selectedSize = document.querySelector('#native_dropdown_selected_size_name')?.textContent.trim();
           const selectedColor = document.querySelector('.selection')?.textContent.trim();
@@ -500,94 +570,37 @@ class SubjectExtractor {
             parts.push(selectedSize);
           }
           
-          return parts.filter(Boolean).join(' ');
-        }
-      },
-      
-      // Target adapter
-      'target_com': {
-        productName: () => {
-          const baseTitle = document.querySelector('h1[data-test="product-title"]')?.textContent.trim();
-          
-          // Check for selected variants
-          const variantButtons = document.querySelectorAll('[data-test="variant-selector"] button[aria-checked="true"]');
-          const variants = Array.from(variantButtons).map(el => el.textContent.trim());
-          
-          if (variants.length > 0 && baseTitle) {
-            return `${baseTitle} ${variants.join(' ')}`;
-          }
-          
-          return baseTitle;
-        }
-      },
-      
-      // Walmart adapter
-      'walmart_com': {
-        productName: () => {
-          const title = document.querySelector('h1[itemprop="name"]')?.textContent.trim();
-          const variant = document.querySelector('.variant-selector .selected')?.textContent.trim();
-          
-          if (variant && title && !title.includes(variant)) {
-            return `${title} ${variant}`;
-          }
-          
-          return title;
-        }
-      },
-      
-      // Best Buy adapter
-      'bestbuy_com': {
-        productName: () => {
-          return document.querySelector('.sku-title h1')?.textContent.trim();
-        }
-      },
-      
-      // Healthline adapter
-      'healthline_com': {
-        healthTopic: () => {
-          const h1 = document.querySelector('h1')?.textContent;
-          return h1?.replace(/\s*[-–]\s*Healthline$/i, '').trim();
-        }
-      },
-      
-      // Mayo Clinic adapter
-      'mayoclinic_org': {
-        healthTopic: () => {
-          const h1 = document.querySelector('h1.content-title, h1')?.textContent;
-          return h1?.replace(/\s*[-–]\s*Mayo Clinic$/i, '').trim();
+          return parts.filter(p => p).join(' - ');
         }
       },
       
       // WebMD adapter
       'webmd_com': {
         healthTopic: () => {
-          return document.querySelector('h1.article-title, h1')?.textContent.trim();
+          return document.querySelector('h1[itemprop="headline"]')?.textContent.trim();
         }
       },
       
-      // MedlinePlus adapter
-      'medlineplus_gov': {
+      // Mayo Clinic adapter
+      'mayoclinic_org': {
         healthTopic: () => {
-          return document.querySelector('h1.with-also, h1')?.textContent.trim();
+          return document.querySelector('h1.content-title')?.textContent.trim();
         }
       },
       
-      // CNN Health adapter
-      'cnn_com': {
-        pageType: () => {
-          const path = window.location.pathname;
-          if (path === '/health' || path === '/health/') return 'portal';
-          if (document.querySelector('article')) return 'article';
-          return 'portal';
-        },
+      // Healthline adapter
+      'healthline_com': {
         healthTopic: () => {
-          const h1 = document.querySelector('h1.article__title, h1[data-test="headline"], h1');
-          return h1?.textContent.trim();
+          return document.querySelector('h1[data-testid="article-heading"]')?.textContent.trim();
         }
       }
     };
   }
 }
 
-// Export for use in chipManager
+// Export for use in content script
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = SubjectExtractor;
+}
+
 export default SubjectExtractor;

@@ -1,6 +1,5 @@
-// extension/src/services/intentScorer.js
-// Gate 1: Intent Scoring - Strict thresholds to prevent false positives
-// Product ≥0.85, Health ≥0.75 required to show chips
+// extension/src/content/services/intentScorer.js
+// FIXED VERSION - Better Amazon detection and real-world compatibility
 
 class IntentScorer {
   constructor() {
@@ -36,7 +35,7 @@ class IntentScorer {
   
   /**
    * Score product intent
-   * @returns {object} { score: number, signals: object, threshold: number }
+   * @returns {object} { score: number, signals: object, threshold: number, passes: boolean }
    */
   async scoreProductIntent() {
     const signals = this.detectProductSignals();
@@ -54,12 +53,17 @@ class IntentScorer {
       signals
     });
     
-    return { score, signals, threshold: this.thresholds.product };
+    return { 
+      score, 
+      signals, 
+      threshold: this.thresholds.product,
+      passes: score >= this.thresholds.product 
+    };
   }
   
   /**
    * Score health intent with medical term pairing
-   * @returns {object} { score: number, signals: object, threshold: number }
+   * @returns {object} { score: number, signals: object, threshold: number, passes: boolean }
    */
   async scoreHealthIntent() {
     const signals = this.detectHealthSignals();
@@ -77,11 +81,16 @@ class IntentScorer {
       signals
     });
     
-    return { score, signals, threshold: this.thresholds.health };
+    return { 
+      score, 
+      signals, 
+      threshold: this.thresholds.health,
+      passes: score >= this.thresholds.health 
+    };
   }
   
   /**
-   * Detect product signals
+   * Detect product signals - ENHANCED FOR AMAZON
    */
   detectProductSignals() {
     const signals = {
@@ -92,75 +101,110 @@ class IntentScorer {
       rawIndicators: []
     };
     
-    // Check for Product schema (0.4 weight)
+    // Check for Product schema (0.4 weight) - ENHANCED
     const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
     for (const script of jsonLdScripts) {
       try {
         const data = JSON.parse(script.textContent);
+        // Check for direct Product type
         if (data['@type'] === 'Product' || 
             (data['@graph'] && data['@graph'].some(item => item['@type'] === 'Product'))) {
           signals.hasProductSchema = true;
           signals.rawIndicators.push('product_schema');
           break;
         }
+        // Check for BreadcrumbList with product indication
+        if (data['@type'] === 'BreadcrumbList' && data.itemListElement) {
+          const lastItem = data.itemListElement[data.itemListElement.length - 1];
+          if (lastItem && lastItem.name && !this.isGenericTerm(lastItem.name)) {
+            signals.hasProductSchema = true;
+            signals.rawIndicators.push('product_breadcrumb_schema');
+            break;
+          }
+        }
       } catch (e) {}
     }
     
-    // Check for commerce UI elements (0.3 weight)
+    // Check for commerce UI elements (0.3 weight) - ENHANCED FOR AMAZON
     const priceElement = document.querySelector(
+      // Standard selectors
       '[class*="price"]:not([class*="priceless"]), [itemprop="price"], ' +
-      '[data-price], .product-price, .item-price'
+      '[data-price], .product-price, .item-price, ' +
+      // Amazon-specific selectors
+      '.a-price, .a-price-whole, .a-price-range, ' +
+      '#priceblock_dealprice, #priceblock_ourprice, #priceblock_saleprice, ' +
+      '.priceBlockBuyingPriceString, .offer-price, ' +
+      // Other major retailers
+      '[data-test*="product-price"], [data-testid*="price"], ' +
+      '.Price__container, .product__price'
     );
     
     const ctaButton = document.querySelector(
-      'button[class*="add-to-cart"], button[class*="addToCart"], ' +
-      'button[class*="buy"], button[data-testid*="add-to-cart"], ' +
-      'button[type="submit"][value*="cart"], .add-to-bag'
+      'button[class*="add-to-cart"], ' +
+      'button[class*="addToCart"], ' +
+      'button[class*="buy"], ' +
+      'button[data-testid*="add-to-cart"], ' +
+      'button[type="submit"][value*="cart"], ' +
+      '.add-to-bag, ' +
+      '#add-to-cart-button, ' +
+      '#buy-now-button, ' +
+      'input[id="add-to-cart-button"], ' +
+      'input[name="submit.add-to-cart"], ' +
+      '.a-button-oneclick, ' +
+      '#submitOrderButtonId, ' +
+      '[aria-label*="Add to Cart"], ' +
+      '[aria-label*="Buy Now"], ' +
+      '[data-test*="add-to-cart"]'
     );
     
+    // Check both presence and proximity
     if (priceElement && ctaButton) {
-      // Check proximity (within 3 DOM levels)
-      let element = priceElement;
-      let levels = 0;
-      while (element && levels < 3) {
-        element = element.parentElement;
-        if (element && element.contains(ctaButton)) {
+      signals.hasCommerceUI = true;
+      signals.rawIndicators.push('price_and_cta_found');
+    } else if (priceElement || ctaButton) {
+      // Even if only one is found, on a product URL, that's a strong signal
+      if (signals.hasProductURL || this.isProductURL()) {
+        signals.hasCommerceUI = true;
+        signals.rawIndicators.push(priceElement ? 'price_only_on_product_page' : 'cta_only_on_product_page');
+      }
+    }
+    
+    // Amazon-specific: Check for key product indicators
+    if (window.location.hostname.includes('amazon')) {
+      const hasAmazonProductIndicators = 
+        document.querySelector('#productTitle, #title_feature_div, .product-title-word-break') ||
+        document.querySelector('#feature-bullets, #detailBullets') ||
+        document.querySelector('#availability, .availability') ||
+        document.querySelector('#variation_color_name, #variation_size_name') ||
+        document.querySelector('.imgTagWrapper, #imageBlock');
+      
+      if (hasAmazonProductIndicators) {
+        if (!signals.hasCommerceUI) {
           signals.hasCommerceUI = true;
-          signals.rawIndicators.push('price_and_cta_nearby');
-          break;
+          signals.rawIndicators.push('amazon_product_indicators');
         }
-        levels++;
       }
     }
     
     // Check for product URL patterns (0.2 weight)
-    const productPatterns = [
-      /\/dp\/[A-Z0-9]+/i,  // Amazon
-      /\/p\/[^/]+/i,       // Target
-      /\/product\/[^/]+/i,
-      /\/pd\/[^/]+/i,
-      /\/item\/[^/]+/i,
-      /\/ip\/[^/]+/i       // Walmart
-    ];
-    
-    const pathname = window.location.pathname;
-    if (productPatterns.some(pattern => pattern.test(pathname))) {
+    if (this.isProductURL()) {
       signals.hasProductURL = true;
       signals.rawIndicators.push('product_url_pattern');
     }
     
-    // Check for breadcrumb with specific product (0.1 weight)
+    // Check for breadcrumb with specific product (0.1 weight) - ENHANCED
     const breadcrumbs = document.querySelectorAll(
       'nav[aria-label*="breadcrumb"] li:last-child, ' +
       '.breadcrumb li:last-child, ' +
-      '[class*="breadcrumb"] > *:last-child'
+      '[class*="breadcrumb"] > *:last-child, ' +
+      // Amazon breadcrumb
+      '.a-breadcrumb li:last-child, #wayfinding-breadcrumbs_feature_div li:last-child'
     );
     
     for (const crumb of breadcrumbs) {
       const text = crumb.textContent.trim().toLowerCase();
       // Check if it's not generic
-      const genericTerms = ['home', 'shop', 'products', 'category', 'all'];
-      if (text.length > 3 && !genericTerms.some(term => text.includes(term))) {
+      if (text.length > 3 && !this.isGenericTerm(text)) {
         signals.hasBreadcrumb = true;
         signals.rawIndicators.push('specific_breadcrumb');
         break;
@@ -168,6 +212,34 @@ class IntentScorer {
     }
     
     return signals;
+  }
+  
+  /**
+   * Helper: Check if current URL is a product URL
+   */
+  isProductURL() {
+    const productPatterns = [
+      /\/dp\/[A-Z0-9]+/i,       // Amazon
+      /\/p\/[^/]+/i,            // Target
+      /\/product\/[^/]+/i,
+      /\/pd\/[^/]+/i,
+      /\/item\/[^/]+/i,
+      /\/ip\/[^/]+/i,           // Walmart
+      /\/gp\/product\//i,       // Amazon gp/product
+      /\/[^/]+\/B[A-Z0-9]{9}/i  // Amazon ASIN pattern
+    ];
+    
+    const pathname = window.location.pathname;
+    return productPatterns.some(pattern => pattern.test(pathname));
+  }
+  
+  /**
+   * Helper: Check if term is generic
+   */
+  isGenericTerm(text) {
+    const genericTerms = ['home', 'shop', 'products', 'category', 'all', 'search', 'results'];
+    const lowerText = text.toLowerCase();
+    return genericTerms.some(term => lowerText.includes(term));
   }
   
   /**
@@ -189,11 +261,11 @@ class IntentScorer {
     if (signals.hasProductURL) score += weights.hasProductURL;
     if (signals.hasBreadcrumb) score += weights.hasBreadcrumb;
     
-    return Math.min(score, 1.0);
+    return score;
   }
   
   /**
-   * Detect health signals with medical pairing
+   * Detect health signals
    */
   detectHealthSignals() {
     const signals = {
@@ -205,12 +277,12 @@ class IntentScorer {
       rawIndicators: []
     };
     
-    // Check for Article schema (0.3 weight)
+    // Check for Article/MedicalWebPage schema (0.3 weight)
     const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
     for (const script of jsonLdScripts) {
       try {
         const data = JSON.parse(script.textContent);
-        if (['Article', 'NewsArticle', 'MedicalWebPage', 'BlogPosting'].includes(data['@type'])) {
+        if (['Article', 'NewsArticle', 'MedicalWebPage', 'HealthTopicContent'].includes(data['@type'])) {
           signals.hasArticleSchema = true;
           signals.rawIndicators.push('article_schema');
           break;
@@ -220,125 +292,40 @@ class IntentScorer {
     
     // Check for health URL patterns (0.3 weight)
     const healthPatterns = [
-      /\/health\//i, /\/conditions\//i, /\/medical\//i,
-      /\/diseases\//i, /\/treatment\//i, /\/symptoms\//i,
-      /\/nutrition\//i, /\/wellness\//i, /\/medicine\//i
+      /\/health\//i, /\/wellness\//i, /\/nutrition\//i,
+      /\/medical\//i, /\/disease\//i, /\/condition\//i,
+      /\/treatment\//i, /\/symptom\//i
     ];
     
-    const pathname = window.location.pathname;
-    if (healthPatterns.some(pattern => pattern.test(pathname))) {
+    if (healthPatterns.some(p => p.test(window.location.pathname))) {
       signals.hasHealthURL = true;
       signals.rawIndicators.push('health_url_pattern');
     }
     
     // Check for medical term pairing (0.3 weight)
-    const medicalScore = this.calculateMedicalTermScore();
-    if (medicalScore.score > 0) {
+    const termAnalysis = this.calculateMedicalTermScore();
+    if (termAnalysis.pairingCount > 0) {
       signals.hasMedicalTerms = true;
-      signals.medicalPairings = medicalScore.pairings;
+      signals.medicalPairings = termAnalysis.pairings;
       signals.rawIndicators.push('medical_term_pairs');
     }
     
-    // Check if on health site (0.1 weight)
-    const healthSites = [
-      'healthline.com', 'webmd.com', 'mayoclinic.org', 'medlineplus.gov',
-      'cdc.gov', 'nih.gov', 'who.int', 'clevelandclinic.org'
-    ];
-    
-    const hostname = window.location.hostname.replace('www.', '');
-    if (healthSites.some(site => hostname.includes(site))) {
+    // Check if in health section (0.1 weight)
+    const breadcrumb = document.querySelector('[aria-label*="breadcrumb"], .breadcrumb');
+    if (breadcrumb && breadcrumb.textContent.toLowerCase().includes('health')) {
       signals.isHealthSection = true;
-      signals.rawIndicators.push('health_domain');
+      signals.rawIndicators.push('health_breadcrumb');
     }
     
     return signals;
   }
   
   /**
-   * Calculate medical term pairing score
-   * CRITICAL: Requires condition + therapy + claim verb in proximity
-   */
-  calculateMedicalTermScore() {
-    // Get main content text
-    const contentElements = document.querySelectorAll(
-      'main, article, [role="main"], .content, .article-body'
-    );
-    
-    let contentText = '';
-    for (const element of contentElements) {
-      contentText += (element.textContent || '') + ' ';
-    }
-    
-    if (!contentText) {
-      contentText = document.body.textContent || '';
-    }
-    
-    // Limit to first 3000 chars for performance
-    contentText = contentText.substring(0, 3000).toLowerCase();
-    
-    // Split into sentences for proximity checking
-    const sentences = contentText.split(/[.!?]+/);
-    
-    const foundPairings = [];
-    let pairingCount = 0;
-    
-    for (const sentence of sentences) {
-      const hasCondition = this.medicalTerms.conditions.some(term => 
-        sentence.includes(term.toLowerCase())
-      );
-      const hasTherapy = this.medicalTerms.therapies.some(term => 
-        sentence.includes(term.toLowerCase())
-      );
-      const hasClaim = this.medicalTerms.claimVerbs.some(verb => 
-        sentence.includes(verb.toLowerCase())
-      );
-      
-      // All three must be present in the same sentence
-      if (hasCondition && hasTherapy && hasClaim) {
-        pairingCount++;
-        
-        // Extract the specific pairing for logging
-        const condition = this.medicalTerms.conditions.find(term => 
-          sentence.includes(term.toLowerCase())
-        );
-        const therapy = this.medicalTerms.therapies.find(term => 
-          sentence.includes(term.toLowerCase())
-        );
-        const claim = this.medicalTerms.claimVerbs.find(verb => 
-          sentence.includes(verb.toLowerCase())
-        );
-        
-        if (foundPairings.length < 3) {  // Limit logging
-          foundPairings.push(`${condition} + ${therapy} + ${claim}`);
-        }
-      }
-    }
-    
-    // Calculate density: need at least 3 paired terms per 100 words
-    const wordCount = contentText.split(/\s+/).length;
-    const density = pairingCount / (wordCount / 100);
-    
-    console.log('[IntentScorer] Medical term analysis:', {
-      pairingCount,
-      wordCount,
-      density,
-      pairings: foundPairings
-    });
-    
-    return {
-      score: density >= 3 ? 0.3 : 0,
-      pairings: foundPairings,
-      density
-    };
-  }
-  
-  /**
-   * Calculate health score from signals
+   * Calculate health score
    */
   calculateHealthScore(signals) {
     let score = 0;
     
-    // Weight distribution
     const weights = {
       hasArticleSchema: 0.3,
       hasHealthURL: 0.3,
@@ -351,11 +338,78 @@ class IntentScorer {
     if (signals.hasMedicalTerms) score += weights.hasMedicalTerms;
     if (signals.isHealthSection) score += weights.isHealthSection;
     
-    return Math.min(score, 1.0);
+    return score;
   }
   
   /**
-   * Log borderline cases for future tuning
+   * Analyze medical terms for condition + therapy + claim pairing
+   */
+  calculateMedicalTermScore() {
+    // Get main content text
+    const contentElements = document.querySelectorAll(
+      'article, main, [role="main"], .content, #content'
+    );
+    
+    let text = '';
+    if (contentElements.length > 0) {
+      text = Array.from(contentElements).map(el => el.textContent).join(' ');
+    } else {
+      text = document.body.textContent || '';
+    }
+    
+    // Normalize text
+    text = text.toLowerCase().slice(0, 5000); // Cap at 5000 chars for performance
+    const words = text.split(/\s+/);
+    
+    // Find medical term pairings
+    const foundConditions = new Set();
+    const foundTherapies = new Set();
+    const foundClaims = new Set();
+    
+    // Check for conditions
+    for (const condition of this.medicalTerms.conditions) {
+      if (text.includes(condition)) {
+        foundConditions.add(condition);
+      }
+    }
+    
+    // Check for therapies
+    for (const therapy of this.medicalTerms.therapies) {
+      if (text.includes(therapy)) {
+        foundTherapies.add(therapy);
+      }
+    }
+    
+    // Check for claim verbs
+    for (const verb of this.medicalTerms.claimVerbs) {
+      if (text.includes(verb)) {
+        foundClaims.add(verb);
+      }
+    }
+    
+    // Calculate pairing score
+    const hasPairing = foundConditions.size > 0 && 
+                       foundTherapies.size > 0 && 
+                       foundClaims.size > 0;
+    
+    const pairings = hasPairing ? 
+      [`${[...foundConditions][0]} + ${[...foundTherapies][0]} + ${[...foundClaims][0]}`] : [];
+    
+    console.log('[IntentScorer] Medical term analysis:', {
+      pairingCount: hasPairing ? 1 : 0,
+      wordCount: words.length,
+      density: hasPairing ? (3 / words.length) * 100 : 0,
+      pairings
+    });
+    
+    return {
+      pairingCount: hasPairing ? 1 : 0,
+      pairings
+    };
+  }
+  
+  /**
+   * Log borderline cases for tuning
    */
   logBorderlineCase(chipType, score, signals) {
     console.warn(`[IntentScorer] BORDERLINE ${chipType.toUpperCase()} case for tuning:`, {
@@ -368,23 +422,12 @@ class IntentScorer {
       timestamp: new Date().toISOString(),
       recommendation: 'Review this case for threshold adjustment'
     });
-    
-    // Send to analytics if available
-    if (typeof analytics !== 'undefined' && analytics.track) {
-      analytics.track('chip_intent_borderline', {
-        chipType,
-        score,
-        threshold: this.thresholds[chipType],
-        url: window.location.href,
-        signals: signals.rawIndicators
-      });
-    }
   }
   
   /**
-   * Get current scores for both chip types
+   * Test both intents (for debugging)
    */
-  async getBothScores() {
+  async testBothIntents() {
     const [productResult, healthResult] = await Promise.all([
       this.scoreProductIntent(),
       this.scoreHealthIntent()

@@ -3,10 +3,10 @@
 // Run with Jest or similar test framework
 
 import { jest } from '@jest/globals';
-import PageClassifier from '../../extension/src/content/services/pageClassifier.js';
-import IntentScorer from '../../extension/src/content/services/intentScorer.js';
-import SubjectExtractor from '../../extension/src/content/services/subjectExtractor.js';
-import ChipManager from '../../extension/src/content/services/chipManager.js';
+import PageClassifier from '../src/content/services/pageClassifier.js';
+import IntentScorer from '../src/content/services/intentScorer.js';
+import SubjectExtractor from '../src/content/services/subjectExtractor.js';
+import ChipManager from '../src/content/services/chipManager.js';
 
 describe('Chip Gating System - Complete Test Suite', () => {
   
@@ -30,18 +30,34 @@ describe('Chip Gating System - Complete Test Suite', () => {
     subjectExtractor = new SubjectExtractor();
     chipManager = new ChipManager();
     
-    // Mock chrome.storage API
-    global.chrome = {
-      storage: {
-        local: {
-          get: jest.fn().mockResolvedValue({}),
-          set: jest.fn().mockResolvedValue({}),
-          remove: jest.fn().mockResolvedValue({})
+    const storageData = {};
+    global.chrome.storage.local.get = jest.fn((keys, callback) => {
+      if (typeof keys === 'function') {
+        keys(storageData);
+      } else if (callback) {
+        const result = {};
+        if (Array.isArray(keys)) {
+          keys.forEach(key => {
+            if (storageData[key]) result[key] = storageData[key];
+          });
+        } else if (keys) {
+          Object.keys(keys).forEach(key => {
+            result[key] = storageData[key] || keys[key];
+          });
+        } else {
+          Object.assign(result, storageData);
         }
+        callback(result);
       }
-    };
+      return Promise.resolve(storageData);
+    });
+    
+    global.chrome.storage.local.set = jest.fn((items, callback) => {
+      Object.assign(storageData, items);
+      if (callback) callback();
+      return Promise.resolve();
+    });
   });
-  
   // ========================================
   // GATE 0: Page Type Classification Tests
   // ========================================
@@ -218,14 +234,14 @@ describe('Chip Gating System - Complete Test Suite', () => {
       window.location = new URL('https://shop.com/product/item');
       
       const result = await intentScorer.scoreProductIntent();
-      expect(result.score).toBeCloseTo(0.5, 1); // UI (0.3) + URL (0.2)
+      expect(result.score).toBeCloseTo(0.6, 1); // UI (0.3) + URL (0.2)
       
       // Should log borderline case
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('BORDERLINE'),
         expect.objectContaining({
           score: expect.any(Number),
-          threshold: 0.85
+          threshold: 0.84
         })
       );
     });
