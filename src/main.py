@@ -10,6 +10,7 @@ from .services.database import get_db_service
 from .services.reputation_service import ReputationService
 from .services.tier0_analyzer import Tier0Analyzer
 
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
