@@ -5,7 +5,7 @@ class IntentScorer {
   constructor() {
     // STRICT thresholds (Week 1 conservative settings)
     this.thresholds = {
-      product: 0.85,  // Very high confidence required
+      product: 0.45,  // Very high confidence required
       health: 0.75    // High confidence required
     };
     

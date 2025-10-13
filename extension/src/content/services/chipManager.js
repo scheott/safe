@@ -136,26 +136,29 @@ class ChipManager {
     
     // If subject needs confirmation (generic/borderline)
     if (extraction.needsConfirm) {
-      this.trackGateBlocked(2, chipType, 'needs_confirmation', {
-        subject: extraction.subject,
+      console.log(`[ChipManager] Low confidence (${extraction.confidence}) - showing with edit option`);
+      
+      this.trackGatesPassed(chipType, this.lastIntentScores[chipType], extraction.subject, {
+        lowConfidence: true,
         failReason: extraction.failReason
       });
       
-      // Show assist modal for user confirmation
+      await this.cooldown.setUrlCooldown(chipType);
+      
       return {
         show: true,
-        state: 'needs_confirm',
+        state: 'ready_editable', // New state: chip shows but with edit UI
         subject: extraction.subject,
+        confidence: extraction.confidence,
+        needsEdit: true, // Flag to show "✏️ Edit" button
         failReason: extraction.failReason
       };
     }
     
     // ==================== ALL GATES PASSED ====================
-    this.trackGatesPassed(chipType, score, extraction.subject);
-    
-    // Set cooldown for this URL
+    this.trackGatesPassed(chipType, this.lastIntentScores[chipType], extraction.subject);
     await this.cooldown.setUrlCooldown(chipType);
-    
+
     return {
       show: true,
       state: 'ready',
@@ -177,50 +180,56 @@ class ChipManager {
       chipElement.classList.remove('visible');
       this.chipStates[chipType] = { visible: false, subject: null };
       
-    } else if (result.state === 'needs_confirm') {
-      // Show assist modal
-      chipElement.style.display = 'none'; // Hide chip until confirmed
-      
-      this.assistModal.show(chipType, result.subject, (response) => {
-        if (response.action === 'confirm') {
-          // User confirmed - show chip with edited subject
-          this.showChipWithSubject(chipType, response.subject);
-        } else {
-          // User dismissed - set dismissal cooldown
-          this.cooldown.dismissChipOnOrigin(chipType);
-        }
+    } else if (result.state === 'ready_editable') {
+      // ELDER-FIRST: Show chip immediately with subtle edit button
+      console.log(`[ChipManager] Showing ${chipType} chip with edit option`);
+      this.showChipWithSubject(chipType, result.subject, {
+        editable: true,
+        confidence: result.confidence,
+        failReason: result.failReason
       });
       
     } else if (result.state === 'ready') {
-      // Show chip immediately
-      this.showChipWithSubject(chipType, result.subject);
+      // High confidence - show without edit button
+      this.showChipWithSubject(chipType, result.subject, { editable: false });
     }
   }
   
   /**
    * Show chip with specific subject
    */
-  showChipWithSubject(chipType, subject) {
+  showChipWithSubject(chipType, subject, options = {}) {
     const chipElement = this.getChipElement(chipType);
     if (!chipElement) return;
     
-    // Update chip content if needed
+    // Update chip content
     const subjectSpan = chipElement.querySelector('.chip-subject');
     if (subjectSpan) {
       subjectSpan.textContent = this.truncateSubject(subject);
+    }
+    
+    // Add or remove edit button based on confidence
+    if (options.editable) {
+      this.addEditButton(chipElement, chipType, subject, options.failReason);
+    } else {
+      this.removeEditButton(chipElement);
     }
     
     // Show chip
     chipElement.style.display = 'flex';
     chipElement.classList.add('visible');
     chipElement.setAttribute('data-subject', subject);
+    chipElement.setAttribute('data-confidence', options.confidence || 'high');
     
-    this.chipStates[chipType] = { visible: true, subject };
+    this.chipStates[chipType] = { 
+      visible: true, 
+      subject,
+      editable: options.editable 
+    };
     
-    // Update chips wrapper visibility
     this.updateChipsWrapperVisibility();
     
-    console.log(`[ChipManager] ${chipType} chip shown with subject: ${subject}`);
+    console.log(`[ChipManager] ${chipType} chip shown${options.editable ? ' (editable)' : ''}: ${subject}`);
   }
   
   /**
@@ -343,6 +352,150 @@ class ChipManager {
     if (typeof analytics !== 'undefined' && analytics.track) {
       analytics.track(eventName, data);
     }
+  }
+  /**
+   * Add subtle edit button to chip
+   */
+  addEditButton(chipElement, chipType, currentSubject, failReason) {
+    // Remove existing edit button if present
+    this.removeEditButton(chipElement);
+    
+    const editBtn = document.createElement('button');
+    editBtn.className = 'chip-edit-btn';
+    editBtn.innerHTML = '✏️';
+    editBtn.title = 'Edit topic';
+    editBtn.setAttribute('aria-label', 'Edit topic');
+    
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.showInlineEditor(chipElement, chipType, currentSubject, failReason);
+    });
+    
+    chipElement.appendChild(editBtn);
+  }
+
+  /**
+   * Remove edit button from chip
+   */
+  removeEditButton(chipElement) {
+    const existingBtn = chipElement.querySelector('.chip-edit-btn');
+    if (existingBtn) {
+      existingBtn.remove();
+    }
+  }
+
+  /**
+   * Show inline editor (replaces modal)
+   */
+  showInlineEditor(chipElement, chipType, currentSubject, failReason) {
+    const editor = document.createElement('div');
+    editor.className = 'chip-inline-editor';
+    
+    const reasonText = failReason === 'contains_generic_term' 
+      ? 'Too generic. Make it more specific:'
+      : failReason === 'brand_only'
+      ? 'Add product details:'
+      : 'Refine the topic:';
+    
+    editor.innerHTML = `
+      <div class="editor-header">${reasonText}</div>
+      <input type="text" 
+            class="editor-input" 
+            value="${currentSubject}"
+            placeholder="${chipType === 'health' ? 'e.g., Intermittent fasting' : 'e.g., Sony WH-1000XM5'}"
+            maxlength="80" />
+      <div class="editor-actions">
+        <button class="editor-save">Save</button>
+        <button class="editor-cancel">Cancel</button>
+      </div>
+    `;
+    
+    // Replace chip content with editor
+    const originalContent = chipElement.innerHTML;
+    chipElement.innerHTML = '';
+    chipElement.appendChild(editor);
+    chipElement.classList.add('chip-editing');
+    
+    const input = editor.querySelector('.editor-input');
+    const saveBtn = editor.querySelector('.editor-save');
+    const cancelBtn = editor.querySelector('.editor-cancel');
+    
+    // Auto-focus and select
+    input.focus();
+    input.select();
+    
+    // Save handler
+    const saveEdit = () => {
+      const newSubject = input.value.trim();
+      if (newSubject && newSubject !== currentSubject) {
+        chipElement.classList.remove('chip-editing');
+        this.showChipWithSubject(chipType, newSubject, { editable: false });
+        this.showUndoNotification(chipType, currentSubject, newSubject);
+        
+        // Track edit
+        if (window.trackEvent) {
+          window.trackEvent('chip_edited', {
+            chipType,
+            oldSubject: currentSubject,
+            newSubject,
+            failReason
+          });
+        }
+      } else {
+        chipElement.innerHTML = originalContent;
+        chipElement.classList.remove('chip-editing');
+      }
+    };
+    
+    // Cancel handler
+    const cancelEdit = () => {
+      chipElement.innerHTML = originalContent;
+      chipElement.classList.remove('chip-editing');
+    };
+    
+    saveBtn.addEventListener('click', saveEdit);
+    cancelBtn.addEventListener('click', cancelEdit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') saveEdit();
+      if (e.key === 'Escape') cancelEdit();
+    });
+  }
+
+  /**
+   * Show subtle undo notification (5 seconds)
+   */
+  showUndoNotification(chipType, oldSubject, newSubject) {
+    const notification = document.createElement('div');
+    notification.className = 'chip-undo-notification';
+    notification.innerHTML = `
+      <span>Updated to "${this.truncateSubject(newSubject)}"</span>
+      <button class="undo-btn">Undo</button>
+    `;
+    
+    const chipElement = this.getChipElement(chipType);
+    const container = chipElement.closest('.chips-wrapper') || chipElement.parentElement;
+    container.appendChild(notification);
+    
+    const undoBtn = notification.querySelector('.undo-btn');
+    undoBtn.addEventListener('click', () => {
+      this.showChipWithSubject(chipType, oldSubject, { editable: true });
+      notification.remove();
+      
+      if (window.trackEvent) {
+        window.trackEvent('chip_edit_undone', {
+          chipType,
+          restoredSubject: oldSubject
+        });
+      }
+    });
+    
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+      if (notification.parentElement) {
+        notification.classList.add('fade-out');
+        setTimeout(() => notification.remove(), 300);
+      }
+    }, 5000);
   }
 }
 
