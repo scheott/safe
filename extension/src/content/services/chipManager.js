@@ -142,9 +142,7 @@ class ChipManager {
         lowConfidence: true,
         failReason: extraction.failReason
       });
-      
-      await this.cooldown.setUrlCooldown(chipType);
-      
+            
       return {
         show: true,
         state: 'ready_editable', // New state: chip shows but with edit UI
@@ -157,7 +155,6 @@ class ChipManager {
     
     // ==================== ALL GATES PASSED ====================
     this.trackGatesPassed(chipType, this.lastIntentScores[chipType], extraction.subject);
-    await this.cooldown.setUrlCooldown(chipType);
 
     return {
       show: true,
@@ -200,7 +197,10 @@ class ChipManager {
    */
   showChipWithSubject(chipType, subject, options = {}) {
     const chipElement = this.getChipElement(chipType);
-    if (!chipElement) return;
+    if (!chipElement) {
+      console.warn(`[ChipManager] Cannot show ${chipType} chip - element not found`);
+      return;  // ✅ Don't set cooldown if chip doesn't exist
+    }
     
     // Update chip content
     const subjectSpan = chipElement.querySelector('.chip-subject');
@@ -230,6 +230,11 @@ class ChipManager {
     this.updateChipsWrapperVisibility();
     
     console.log(`[ChipManager] ${chipType} chip shown${options.editable ? ' (editable)' : ''}: ${subject}`);
+    
+    // ✅ ADDED: Set cooldown ONLY after successful render
+    this.cooldown.setUrlCooldown(chipType).catch(err => {
+      console.error('[ChipManager] Failed to set cooldown:', err);
+    });
   }
   
   /**

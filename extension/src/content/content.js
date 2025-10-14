@@ -68,7 +68,7 @@ class SafeSignalBadge {
         
         await this.loadUserPreferences();
         this.createBadge();
-        chipManager.chipElements = {
+        this.chipManager.chipElements = {  // ← CHANGED: chipManager to this.chipManager
             product: () => this.root.querySelector('.chip-product'),
             health: () => this.root.querySelector('.chip-health'),
             wrapper: () => this.chipsWrapper
@@ -110,11 +110,12 @@ class SafeSignalBadge {
             this.scanner = new PageScanner(this.apiClient);
             this.scannerUI = new ScannerUI(this.scanner, this.root);
             console.log('[SafeSignal] ✅ Scanners initialized');
-            this.chipManager.chipElements = {
-                product: this.root.querySelector('.chip-product'),
-                health: this.root.querySelector('.chip-health'),
-                wrapper: this.chipsWrapper
-            };
+            // ← You can DELETE this entire block - it's redundant since init() already sets it
+            // this.chipManager.chipElements = {
+            //     product: this.root.querySelector('.chip-product'),
+            //     health: this.root.querySelector('.chip-health'),
+            //     wrapper: this.chipsWrapper
+            // };
         } catch (error) {
             console.error('[SafeSignal] Scanner initialization failed:', error);
         }
@@ -476,7 +477,14 @@ class SafeSignalBadge {
             <div class="safesignal-container pos-bottom-right" id="main-container">
                 <!-- Mini chips wrapper (will be populated dynamically) -->
                 <div class="chips-wrapper" id="chips-wrapper"></div>
-                
+                    <div class="mini-chip chip-product" style="display: none;">
+                        <span class="chip-icon">🛍️</span>
+                        <span class="chip-subject"></span>
+                    </div>
+                    <div class="mini-chip chip-health" style="display: none;">
+                        <span class="chip-icon">🏥</span>
+                        <span class="chip-subject"></span>
+                    </div>
                 <!-- Badge wrapper -->
                 <div class="badge-wrapper">
                     <div class="badge state-checking" 
